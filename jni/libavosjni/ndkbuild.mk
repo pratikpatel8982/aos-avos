@@ -40,7 +40,7 @@ LOCAL_C_INCLUDES := \
 	$(AVOS_DIR)/public
 
 LOCAL_MODULE_TAGS := optional
-
+LOCAL_STATIC_LIBRARIES += ass_prebuilt harfbuzz_prebuilt freetype_prebuilt fribidi_prebuilt
 LOCAL_SHARED_LIBRARIES := libnvpnativehelper libavos$(AVOS_LIBS_SUFFIX)
 LOCAL_MODULE := libavosjni$(AVOS_LIBS_SUFFIX)
 

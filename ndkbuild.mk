@@ -63,7 +63,7 @@ LOCAL_LDLIBS := -L$(TARGET_OUT) -lz \
 
 LOCAL_STATIC_LIBRARIES := $(sort $(addsuffix $(AVOS_LIBS_SUFFIX), $(AVOS_STATIC_LIBS))) \
 	cpufeatures libyuv
-
+LOCAL_STATIC_LIBRARIES += ass_prebuilt harfbuzz_prebuilt freetype_prebuilt fribidi_prebuilt
 LOCAL_MODULE := libavos$(AVOS_LIBS_SUFFIX)
 
 LOCAL_MODULE_TAGS := optional

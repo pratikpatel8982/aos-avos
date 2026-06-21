@@ -92,44 +92,44 @@ typedef struct AVQueue {
 	int 		packets;
 } AVQueue;
 
-typedef struct FF_PRIV 
+typedef struct FF_PRIV
 {
 	AVFormatContext *fmt;
         AVDictionary    *fmt_opts;
-	
+
 	AVQueue		aq;
 	AVQueue		vq;
 	AVQueue		sq;
-	
+
 	STREAM		*s;
 	UINT64		size;
 	int		duration;
 	int		start_time;
-	
+
 	AV_PROPERTIES 	av;
 	AUDIO_PROPERTIES *audio;
 	VIDEO_PROPERTIES *video;
 	SUB_PROPERTIES 	*subtitle;
-	
+
 	ID3_TAG		tag;
 
 	int 		flags;
 	int		buffer_size;
 	int 		sleeping;
-	
+
 	int 		time_base_den;
 	int 		time_base_num;
 
 	int 		packet_count;
-	
+
 	int 		need_key;
 	int 		last_audio_time;
-	
+
 	int		apid;
 	int		vpid;
 
 	STREAM_CHUNK	sc;
-	
+
 } FF_PRIV;
 
 
@@ -146,7 +146,7 @@ static struct id_fmt_str {
 	int 	id;
 	int 	format;
 	UINT32 	fourcc;
-} id_fmt[] = 
+} id_fmt[] =
 {
 	// Audio
 	{ AV_CODEC_ID_MP2,	WAVE_FORMAT_MPEG,		0	},
@@ -166,9 +166,9 @@ static struct id_fmt_str {
 	{ AV_CODEC_ID_TRUEHD,	WAVE_FORMAT_TRUEHD,		0	},
 	{ AV_CODEC_ID_EAC3,	WAVE_FORMAT_EAC3,		0	},
 	{ AV_CODEC_ID_PCM_BLURAY, WAVE_FORMAT_PCM_BLURAY,	0	},
-		
+
 	// Video
-	{ AV_CODEC_ID_MPEG4,	VIDEO_FORMAT_MPG4,		VIDEO_FOURCC_DX50	},	
+	{ AV_CODEC_ID_MPEG4,	VIDEO_FORMAT_MPG4,		VIDEO_FOURCC_DX50	},
 	{ AV_CODEC_ID_MPEG2VIDEO,VIDEO_FORMAT_MPEG,		VIDEO_FOURCC_MPG2	},
 	{ AV_CODEC_ID_H264,	VIDEO_FORMAT_H264,		VIDEO_FOURCC_H264	},
 #ifdef CONFIG_FF_HEVC
@@ -197,7 +197,7 @@ static struct id_fmt_str {
 //	{ AV_CODEC_ID_DVB_SUBTITLE,SUB_FORMAT_DVBT,	0 },
 	{ AV_CODEC_ID_TEXT,	SUB_FORMAT_TEXT,	0 },
 	{ AV_CODEC_ID_BIN_DATA,	SUB_FORMAT_TEXT,	0 },
-	{ AV_CODEC_ID_SUBRIP,   SUB_FORMAT_TEXT,        0 },	
+	{ AV_CODEC_ID_SUBRIP,   SUB_FORMAT_TEXT,        0 },
 	{ AV_CODEC_ID_XSUB,	SUB_FORMAT_XSUB,	0 },
 	{ AV_CODEC_ID_SSA,	SUB_FORMAT_SSA,		0 },
 	{ AV_CODEC_ID_ASS,	SUB_FORMAT_SSA,		0 },
@@ -235,10 +235,10 @@ static const char *disposition_name( int disposition, int is_audio )
 		return "(attached pic)";
 	if (disposition & AV_DISPOSITION_CLEAN_EFFECTS)
 		return "(clean effects)";
-		
+
 	return "(none)";
 }
- 
+
 void av_log_cb(void* ptr, int level, const char* fmt, va_list vl)
 {
 	if( log_debug && level > AV_LOG_DEBUG ) {
@@ -265,7 +265,7 @@ static int get_ff_format( int id, UINT32 *fourcc )
 			}
 			return id_fmt[i].format;
 		}
-	} 
+	}
 	return 0;
 }
 
@@ -275,7 +275,7 @@ static int get_ff_format( int id, UINT32 *fourcc )
 //
 // ************************************************************
 // REMARK: cannot use scaling by audio speed there because task is performed once
-static int _parse_format( int etype, FF_PRIV *priv ) 
+static int _parse_format( int etype, FF_PRIV *priv )
 {
 	AVFormatContext *fmt = priv->fmt;
 
@@ -346,12 +346,12 @@ DBGP serprintf("\tcodec_id   %X\r\n", codecpar->codec_id);
 DBGP serprintf("\tcodec_name %s\r\n", desc ? desc->name : "");
 DBGP serprintf("\tcodec_long_name %s\r\n", desc ? desc->long_name : "");
 		if( codecpar->extradata_size ) {
-DBGP serprintf("\textra      "); 
+DBGP serprintf("\textra      ");
 DBGP DumpLine( codecpar->extradata, MIN(128,codecpar->extradata_size), MIN(128,codecpar->extradata_size) );
 		}
 DBGP serprintf("\tbitrate    %d\r\n", codecpar->bit_rate);
 DBGP serprintf("\tdisposition %d / %s\r\n", st->disposition, disposition_name(st->disposition, st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO));
-		
+
 		if(st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO){
 			//
 			// video
@@ -362,10 +362,10 @@ DBGP serprintf("\tdisposition %d / %s\r\n", st->disposition, disposition_name(st
 			if(st->avg_frame_rate.den && st->avg_frame_rate.num) {
 DBGP serprintf("\tfps        %5.2f fps(r)\r\n", av_q2d(st->avg_frame_rate));
 			}
-DBGP serprintf("\tPAR        %d/%d\r\n", codecpar->sample_aspect_ratio.num, codecpar->sample_aspect_ratio.den ); 
+DBGP serprintf("\tPAR        %d/%d\r\n", codecpar->sample_aspect_ratio.num, codecpar->sample_aspect_ratio.den );
 			if ( priv->av.vs_max < VIDEO_TRACK_MAX ) {
 				VIDEO_PROPERTIES *video = priv->av.video + priv->av.vs_max;
-				
+
 				video->stream = i;
                 if (st->avg_frame_rate.den && st->r_frame_rate.den && av_q2d(st->avg_frame_rate) == av_q2d(st->r_frame_rate)) {
                     video->frame_rate_den = st->r_frame_rate.den;
@@ -386,20 +386,20 @@ serprintf( "untouched (!?) vrate=%d; vscale=%d\n", video->rate, video->scale );
 				priv->time_base_den = st->time_base.den/gcd;
 				video->frames = 0;
 				video->valid  = 1;
-				
+
 				//if( priv->av.vs_max == 0 && video->rate )
 				//	priv->duration = (UINT32)( 1000ull * (UINT64)video->frames * (UINT64) video->scale / (UINT64) video->rate);
 
 				video->codec_id	   = codecpar->codec_id;
 				strnZcpy( video->codec_name, desc ? desc->name : "", AV_NAME_LEN );
-				
+
 				video->fourcc      = codecpar->codec_tag;
 				video->format      = get_ff_format( codecpar->codec_id, &video->fourcc  );
 				if( video->format == 0 && video->codec_id ) {
 					video->format = VIDEO_FORMAT_LAVC;
 					video->fourcc = VIDEO_FOURCC_LAVC;
 				}
-				
+
 				if( codecpar->extradata_size ) {
 					// libavformat used to skip the first 4 bytes in av1 private data but not anymore
 					// for AV1 both sfdec android hw codecs and dav1d do not want this thus skip it
@@ -428,8 +428,8 @@ serprintf("FF: parse H264 SPS\n");
 						video->extraDataSize2 = codecpar->extradata_size - offset;
 						video->extraData2     = codecpar->extradata + offset;
 					}
-				} 
-				
+				}
+
 				video->width       = codecpar->width;
 				video->height      = codecpar->height;
 				video->aspect_n    = codecpar->sample_aspect_ratio.num;
@@ -456,7 +456,7 @@ serprintf("FF: parse H264 SPS\n");
 				if( force_reorder != -1 ) {
 					video->reorder_pts = force_reorder;
 				}
-				
+
 				priv->av.vs_max ++;
 				discard = 0;
 
@@ -499,7 +499,7 @@ serprintf("FF: parse H264 SPS\n");
                                         video->dv_profile = 16; //DolbyVisionProfileDvheDtr
                                         break;
                                     case 5:
-                                        video->dv_profile = 32; //DolbyVisionProfileDvheStn 
+                                        video->dv_profile = 32; //DolbyVisionProfileDvheStn
                                         break;
                                     case 7:
                                         video->dv_profile = 256; //DolbyVisionProfileDvheSt
@@ -516,7 +516,7 @@ serprintf("FF: parse H264 SPS\n");
                                 }
                             } else if (video->format == VIDEO_FORMAT_AV1) {
                                 if (dovi_record->dv_profile == 10) {
-                                    video->dv_profile = 0x400;//DolbyVisionProfileDvav110 
+                                    video->dv_profile = 0x400;//DolbyVisionProfileDvav110
                                 } else {
                                     serprintf("Unsupported Dolby AV1 profile %d", dovi_record->dv_profile);
                                 }
@@ -587,7 +587,7 @@ DBGP serprintf("\tchannels   %d\r\n", codecpar->ch_layout.nb_channels);
 DBGP serprintf("\tfps        %5.2f fps(r)\r\n", av_q2d(st->avg_frame_rate));
 			}
 
-			if ( priv->av.as_max < AUDIO_TRACK_MAX ) {	
+			if ( priv->av.as_max < AUDIO_TRACK_MAX ) {
 				AUDIO_PROPERTIES *audio = priv->av.audio + priv->av.as_max;
 
 				audio->codec_id	     = codecpar->codec_id;
@@ -643,7 +643,7 @@ DBGP serprintf( "arate=%d; ascale=%d\n", audio->rate, audio->scale );
 						audio->priority = 2;
 					}
 				}
-				
+
 				if ( audio->format == WAVE_FORMAT_IMA ) {
 					audio->samplesPerBlock = 0;
 				}
@@ -651,23 +651,23 @@ DBGP serprintf( "arate=%d; ascale=%d\n", audio->rate, audio->scale );
 				if( codecpar->extradata_size ) {
 					if( codecpar->extradata_size <= sizeof( audio->extraData ) ) {
 						audio->extraDataSize = codecpar->extradata_size;
-						memcpy( audio->extraData, codecpar->extradata, audio->extraDataSize  );	
+						memcpy( audio->extraData, codecpar->extradata, audio->extraDataSize  );
 					} else {
 						audio->extraDataSize  = 0;
 						audio->extraDataSize2 = codecpar->extradata_size;
 						audio->extraData2     = codecpar->extradata;
 					}
-				} 
-				
+				}
+
 				// hack for stupid canon cameras!
 				if ( audio->samplesPerSec == 11024 )
 					audio->samplesPerSec ++;
-				
+
 				//_check_VBR( audio );
-				
+
 				priv->av.as_max ++;
 				discard = 0;
-			} 
+			}
 		} else if( st->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE || st->codecpar->codec_type == AVMEDIA_TYPE_DATA ){
 			//
 			// subtitle
@@ -675,7 +675,7 @@ DBGP serprintf( "arate=%d; ascale=%d\n", audio->rate, audio->scale );
 			int fmt = get_ff_format( codecpar->codec_id, NULL );
 			if( fmt && priv->av.subs_max < SUB_TRACK_MAX ) {
 				SUB_PROPERTIES *sub = priv->av.sub + priv->av.subs_max;
-	
+
 				sub->valid          = 1;
 				sub->codec_id	    = codecpar->codec_id;
 				strnZcpy( sub->codec_name, desc ? desc->name : "", AV_NAME_LEN );
@@ -715,17 +715,17 @@ DISCARD_STREAM:
 		if( discard ) {
 DBGP serprintf("\tDISCARD!\n" );
 			st->discard = AVDISCARD_ALL;
-		}		
+		}
 DBGP serprintf("\r\n");
 	}
 
 	if( fmt->nb_chapters ) {
-DBGP serprintf("chapters:\r\n");	
+DBGP serprintf("chapters:\r\n");
 		for( i =0; i < fmt->nb_chapters; i++ ) {
 			// chapters stays in rst domain
 			AVChapter *ch = fmt->chapters[i];
-			UINT64 start = 1000 * ch->start * ch->time_base.num / ch->time_base.den; 
-			UINT64 end   = 1000 * ch->end   * ch->time_base.num / ch->time_base.den; 
+			UINT64 start = 1000 * ch->start * ch->time_base.num / ch->time_base.den;
+			UINT64 end   = 1000 * ch->end   * ch->time_base.num / ch->time_base.den;
 			AVDictionaryEntry *t = av_dict_get( ch->metadata, "title", NULL, 0 );
 			DBGP serprintf( "[%2d] id %08X  start/end %8lld/%8lld  [%s]\r\n", i, ch->id, start, end,
 							t ? t->value : "(no title)" );
@@ -753,7 +753,7 @@ static void parse_PID_from_query( STREAM *s )
 		ff_p->vpid = pid;
 DBGP serprintf("video PID    %4d\n", ff_p->vpid);
 	}
-	
+
 	char *aud = strstr( s->src_query, "aud=" );
 	if( aud && sscanf( aud, "aud=%d", &pid ) == 1 ) {
 		ff_p->apid = pid;
@@ -774,13 +774,13 @@ DBGS serprintf("FFMPEG: open: %s, buffer_size: %d\r\n", s->src.url, buffer_size)
 	if( !(s->parser_priv = (FF_PRIV*)amalloc( sizeof( FF_PRIV ) ) ) ) {
 		goto ErrorExit;
 	}
-	
+
 	memset( ff_p, 0, sizeof( FF_PRIV ) );
 	av_init_props( ff_p );
 	ff_p->s = s;
-	
+
 	ff_p->flags = flags;
-	
+
 	stream_parser_clear_chunks( s );
 
 		ff_p->buffer_size = buffer_size;
@@ -789,36 +789,36 @@ DBGS serprintf("FFMPEG: open: %s, buffer_size: %d\r\n", s->src.url, buffer_size)
 	if( log_debug ) {
 		av_log_set_level( AV_LOG_DEBUG );
  	}
-	
+
 	if (avformat_network_init() != 0) {
 serprintf("FFMPEG: cannot init network");
 		goto ErrorExit2;
     	}
-	
+
 	ff_p->fmt = avformat_alloc_context();
 
 	// set max_delay here, we need that for proper RTSP, all other demuxers ignore it ...
 	ff_p->fmt->max_delay = max_delay;
 DBGP serprintf("max_delay: %d\n", ff_p->fmt->max_delay);
-	
+
 	ff_p->fmt->interrupt_callback.callback = ffmpeg_interrupt_cb;
 	ff_p->fmt->interrupt_callback.opaque   = s;
 
 	if( strstr( s->src_query, "?mpegts&" ) ) {
 		parse_PID_from_query( s );
 	}
-	
+
 	if( force_vpid ) {
 		ff_p->vpid = force_vpid;
 	}
 	if( force_apid ) {
 		ff_p->apid = force_apid;
 	}
-		
+
 	if( ff_p->vpid || ff_p->apid ) {
 		char buf[32];
 		av_dict_set(&ff_p->fmt_opts, "no_pat", "1", 0);
-        	
+
 		if( ff_p->vpid ) {
 			snprintf(buf, sizeof(buf), "%d", ff_p->vpid);
 			av_dict_set(&ff_p->fmt_opts, "vpid", buf, 0);
@@ -894,7 +894,7 @@ DBGP serprintf("info\r\n");
 
 	s->duration = ff_p->duration;
 	s->size     = ff_p->size;
-	
+
 	LinkedList_init( &ff_p->aq.list );
 	LinkedList_init( &ff_p->vq.list );
 	LinkedList_init( &ff_p->sq.list );
@@ -907,7 +907,7 @@ DBGP serprintf("info\r\n");
 	//s->sync_mode = STREAM_SYNC_SAMPLES;
 	//s->sync_mode = STREAM_SYNC_CDATA; // current default one
 	s->sync_mode = stream_parser_get_sync_mode();
-	
+
 	// Force sample-based sync for FLAC audio tracks to avoid sync issues
 	if (s->audio->valid && s->audio->format == WAVE_FORMAT_FLAC) {
 		s->sync_mode = STREAM_SYNC_SAMPLES;
@@ -929,7 +929,7 @@ ErrorExit2:
 ErrorExit:
 	afree( ff_p );
 	s->parser_priv = NULL;
-	
+
 	return 1;
 }
 
@@ -944,7 +944,7 @@ DBGS serprintf("FFMPEG: close\r\n");
 	if( !s->parser_open ) {
 serprintf("FFMPEG: not open!\r\n" );
 		return 1;
-	} 
+	}
 	s->parser_open = 0;
 	if( ff_p ) {
 		if( ff_p->fmt ) {
@@ -991,7 +991,7 @@ static int _add_packet( AVQueue *q, AVPacket *packet )
 	av_packet_ref(&node->packet, packet);
 
 	LinkedList_append( &q->list, (LinkedListNode*) node);
-	
+
 	q->mem_used += sizeof( PacketNode ) + node->packet.size;
 	q->packets  ++;
 	pthread_mutex_unlock( &q->mutex );
@@ -1010,19 +1010,19 @@ static AVPacket *_get_packet( AVQueue *q, AVPacket *packet )
 	if( !node ) {
 		pthread_mutex_unlock( &q->mutex );
 		return NULL;
-	}	
+	}
 
 	LinkedList_remove( &q->list, (LinkedListNode*)node );
 
 	*packet = node->packet;
 	afree( node );
-	
+
 	q->mem_used -= sizeof( PacketNode ) + packet->size;
 	q->packets  --;
-	
+
 	pthread_mutex_unlock( &q->mutex );
 	return packet;
-} 
+}
 
 // ************************************************************
 //
@@ -1036,13 +1036,13 @@ static AVPacket *_peek_packet( AVQueue *q, AVPacket *packet, int at )
 	if( !node ) {
 		pthread_mutex_unlock( &q->mutex );
 		return NULL;
-	}	
+	}
 
 	*packet = node->packet;
-	
+
 	pthread_mutex_unlock( &q->mutex );
 	return packet;
-} 
+}
 
 // ************************************************************
 //
@@ -1127,7 +1127,7 @@ static int _get_subtitle_time( STREAM *s, AVPacket *packet )
 static int _parse_once( STREAM *s, int *timestamp)
 {
 	AVFormatContext *fmt = ff_p->fmt;
-	
+
 	if( ff_p->sleeping ) {
 		// we are sleeping, decide whether to wake up
 		if( s->time_parsed < stream_drive_wake_sleep ) {
@@ -1146,9 +1146,9 @@ DBGP2 serprintf("FFMPEG full %d %d %d %d\r\n", ff_p->aq.mem_used, ff_p->vq.mem_u
 DBGP serprintf("FFMPEG: sleep\r\n");
 			ff_p->sleeping = 1;
 		}
-		return 0;		
-	}	
-	
+		return 0;
+	}
+
 	// Read the next packet, skipping all packets that aren't for this stream
 	AVPacket packet = { 0 };
 	// Read new packet
@@ -1162,12 +1162,12 @@ DBGP serprintf("FFMPEG: end\r\n");
 	}
 
 	int stream = packet.stream_index;
-DBGP3 serprintf("%8d/%8d/%8d  %4d/%4d/%4d  ", 
-			ff_p->aq.mem_used, ff_p->vq.mem_used, ff_p->sq.mem_used, 
+DBGP3 serprintf("%8d/%8d/%8d  %4d/%4d/%4d  ",
+			ff_p->aq.mem_used, ff_p->vq.mem_used, ff_p->sq.mem_used,
 			ff_p->aq.packets,  ff_p->vq.packets,  ff_p->sq.packets );
-DBGP2 serprintf("pkt [%4d] st %d  size %10d  pos %8lld  %08X  ", 
+DBGP2 serprintf("pkt [%4d] st %d  size %10d  pos %8lld  %08X  ",
 			ff_p->packet_count++, stream, packet.size, packet.pos, packet.data );
-	
+
 	if( s->audio->valid && stream == s->audio->stream ) {
 		DBG serprintf("FFMPEG:AUDIO pkt st=%d pts=%lld dts=%lld pos=%lld size=%d seek=%d\n",
 			stream,
@@ -1193,7 +1193,7 @@ DBGC4 serprintf("VIDEO      dts/pts %8lld/%8lld  %s  %02X %02X %02X %02X\r\n", G
 			*timestamp = use_pts ? GET_VIDEO_TS( packet.pts ) : GET_VIDEO_TS( packet.dts );
 	} else if( s->subtitle->valid && stream == s->subtitle->stream ) {
 DBGP2 serprintf("SUBTITLE   dts/pts %8lld/%8lld  ", GET_SUB_TS( packet.dts ), GET_SUB_TS( packet.pts ) );
-DBGP2 DumpLine( packet.data, 16, 16 );		
+DBGP2 DumpLine( packet.data, 16, 16 );
 		// add subtitle packet
 		_add_packet( &ff_p->sq, &packet );
 		if( timestamp )
@@ -1247,7 +1247,7 @@ static int _seekable( STREAM *s )
 	if( s->etype == ETYPE_RTSP ) {
 		return 0;
 	}
-	
+
 	if( s->size == (UINT64)0xFFFFFFFFFFFFFFFull ) {
 		return 0;
 	}
@@ -1263,20 +1263,20 @@ static int _seekable( STREAM *s )
 static int _seek( STREAM *s, int time, int pos, int dir, int flags, int force_reload, STREAM_CHUNK *sc )
 {
 	// time argument is rst
-DBGP serprintf("FFMPEG: seek: time %8d  pos %5d  dir %d\r\n", time, pos, dir); 
+DBGP serprintf("FFMPEG: seek: time %8d  pos %5d  dir %d\r\n", time, pos, dir);
 	AVFormatContext *fmt = ff_p->fmt;
 	int start = atime();
-	
+
 	ff_p->last_audio_time = 0;
-	
+
 	int av_flags = dir & STREAM_SEEK_BACKWARD ? AVSEEK_FLAG_BACKWARD : 0;
-	
+
 	INT64 new_pos;
 	if( time == -1 ) {
 		// seek to pos
 		new_pos = s->size * pos / STREAM_POS_MAX;
 		av_flags |= AVSEEK_FLAG_BYTE;
-		
+
 		if( new_pos > s->size ) {
 			// pos is beyond end of file - what do we do now?
 			DBGP serprintf("at end %lld %llu\r\n", new_pos, s->size);
@@ -1296,7 +1296,7 @@ DBGP serprintf("FFMPEG: new pos: %lld\r\n", new_pos );
 		DBGP serprintf( "FFMPEG: new time: %lld\r\n", new_pos );
 	}
 
-	__attribute__((unused))	
+	__attribute__((unused))
 	int stream = s->video->valid ? s->video->stream : s->audio->stream;
 #if 0
 	int ret = av_seek_frame( fmt, stream, new_pos, 1 );
@@ -1308,10 +1308,10 @@ DBGP serprintf("FFMPEG: new pos: %lld\r\n", new_pos );
 #endif
 
 	if( ret < 0 ) {
-serprintf("FFMPEG: seek error\r\n"); 
+serprintf("FFMPEG: seek error\r\n");
 		return 1;
 	}
-	
+
 	s->audio_parse_end = 0;
 	s->video_parse_end = 0;
 
@@ -1320,11 +1320,11 @@ serprintf("FFMPEG: seek error\r\n");
 	_flush_packets( &ff_p->sq, "SUB" );
 
 	ff_p->sleeping = 0;
-	
+
 	// retry until we get a video frame
 	int ignore_first = 0;
 	if( s->video->format == VIDEO_FORMAT_MPEG ) {
-		// for some f*cking reason, lavf is unable to give 
+		// for some f*cking reason, lavf is unable to give
 		// us a good key frame after seek in TS, so we scan until
 		// the next one...doh
 		ignore_first = 1;
@@ -1333,7 +1333,7 @@ serprintf("FFMPEG: seek error\r\n");
 	int retry = 500;
 	while( retry -- ) {
 		_parse_once( s, NULL );
-		
+
 		AVPacket _packet;
 		AVPacket *packet = _peek_packet( &ff_p->vq, &_packet, 0 );
 		if( packet ) {
@@ -1352,10 +1352,10 @@ DBGP serprintf("ignore! %d\n", ts);
 DBGP serprintf("nokey!  %d\n", ts);
 			}
 			packet = _get_packet( &ff_p->vq, &_packet );
-			_dispose_packet( packet );			
+			_dispose_packet( packet );
 		}
 	}
-DBGP serprintf("FFMPEG: seek to time %8d  pos %5d  dir %d -> %d/%lld  (took %d)\r\n", time, pos, dir, sc->time, sc->pos, atime() - start ); 
+DBGP serprintf("FFMPEG: seek to time %8d  pos %5d  dir %d -> %d/%lld  (took %d)\r\n", time, pos, dir, sc->time, sc->pos, atime() - start );
 	if( s->audio->valid ) {
 		while( 1 ) {
 			AVPacket _packet;
@@ -1370,10 +1370,10 @@ DBGP serprintf("FFMPEG: seek to time %8d  pos %5d  dir %d -> %d/%lld  (took %d)\
 			}
 DBGP serprintf("audio!  %d\n", ts);
 			packet = _get_packet( &ff_p->aq, &_packet );
-			_dispose_packet( packet );			
+			_dispose_packet( packet );
 		}
 	}
-	
+
 	return 0;
 }
 
@@ -1398,12 +1398,12 @@ static int _get_audio_cdata( STREAM *s, CLEVER_BUFFER *audio_buffer, STREAM_CDAT
 	if( cdata->valid != 0 ) {
 		return 0;
 	}
-	
+
 	// drop audio until we have a video key frame
 	if( s->video->valid && ff_p->need_key ) {
 		return 1;
 	}
-	
+
 	AVPacket _packet;
 	AVPacket *packet = _get_packet( &ff_p->aq, &_packet );
 	if( !packet ) {
@@ -1412,7 +1412,7 @@ static int _get_audio_cdata( STREAM *s, CLEVER_BUFFER *audio_buffer, STREAM_CDAT
 
 	if( audio_buffer->size < packet->size ) {
 		if ( realloc_clever_buffer( audio_buffer, packet->size ) ) {
-			_dispose_packet( packet );			
+			_dispose_packet( packet );
 			return 1;
 		}
 	}
@@ -1426,7 +1426,7 @@ static int _get_audio_cdata( STREAM *s, CLEVER_BUFFER *audio_buffer, STREAM_CDAT
 	cdata->time       = _get_audio_time( s, packet );
 	cdata->frame      = 0;
 	cdata->pos        = packet->pos;
-	
+
 	if( cdata->time != STREAM_NO_PTS_VALUE ) {
 		if( ff_p->last_audio_time && abs(cdata->time - ff_p->last_audio_time) > 1000 ) {
 			DBG serprintf("FF: audio_skip! %d\n", cdata->time - ff_p->last_audio_time );
@@ -1434,10 +1434,10 @@ static int _get_audio_cdata( STREAM *s, CLEVER_BUFFER *audio_buffer, STREAM_CDAT
 		}
 		ff_p->last_audio_time = cdata->time;
 	}
-	
+
 DBGC2  serprintf(" A   siz %6d  pos %8lld   tim %8d  pkt %6d  %8d\r\n", packet->size, packet->pos, cdata->time, ff_p->aq.packets, ff_p->aq.mem_used );
 	memcpy( audio_buffer->data, packet->data, packet->size );
-	
+
 	cdata->valid = CHUNK_VALID;
 
 	_dispose_packet( packet );
@@ -1460,7 +1460,7 @@ static STREAM_CHUNK *_peek_n_audio_chunk(STREAM *s, int n, UCHAR **data )
 
 	sc->stream = s->audio->stream;
 	sc->size   = packet->size;
-	if( data ) { 
+	if( data ) {
 		*data = packet->data;
 	}
 	return sc;
@@ -1476,14 +1476,14 @@ static int _get_video_cdata( STREAM *s, CBE *cbe, STREAM_CDATA *cdata )
 	if( cdata->valid != 0 ) {
 		return 0;
 	}
-	
+
 	AVPacket _packet;
 	AVPacket *packet = _get_packet( &ff_p->vq, &_packet );
 	if( !packet ) {
 		return 1;
 	}
 	memset( cdata, 0, sizeof( STREAM_CDATA ) );
-	
+
 	if( ff_p->need_key ) {
 		if( !(packet->flags & AV_PKT_FLAG_KEY) ) {
 			goto  ErrorExit;
@@ -1505,7 +1505,7 @@ DBGC8  serprintf("V    siz %6d  pos %8lld %d tim %8d  pkt %6d  %8d\r\n", packet-
 		VIDEO_PROPERTIES new = { 0 };
 		if( !MPEG_get_video_props( ff_p->video->format, &new, packet->data, 1, packet->size ) ) {
 			int changed;
-			MPEG_check_video_changed( ff_p->video, &new, &changed );  
+			MPEG_check_video_changed( ff_p->video, &new, &changed );
 			if( changed ) {
 				cdata->changed = &ff_p->av;
 			}
@@ -1515,24 +1515,24 @@ DBGC8  serprintf("V    siz %6d  pos %8lld %d tim %8d  pkt %6d  %8d\r\n", packet-
 	if( !s->video->no_extra && s->video->format != VIDEO_FORMAT_WMV3 ) {
 		stream_parser_send_video_extra( s->video, cbe, &cdata->size );
 	}
-	
+
 #ifdef CONFIG_H264
 	if( s->video->avcc ) {
 		H264_parse_NAL( (UCHAR*)packet->data, packet->size, cbe, &cdata->size, s->video->nal_unit_size );
-	} else 
+	} else
 #endif
 #ifdef CONFIG_HEVC
 	if( s->video->hvcc ) {
 		HEVC_parse_NAL( (UCHAR*)packet->data, packet->size, cbe, &cdata->size, s->video->nal_unit_size );
-	} else 
+	} else
 #endif
 	{
 		cbe_write( cbe, (UCHAR*)packet->data, packet->size);
 		cdata->size  += packet->size;
-	}	
-	
+	}
+
 	cdata->valid  = CHUNK_VALID;
-ErrorExit:	
+ErrorExit:
 	_dispose_packet( packet );
 
 	return 0;
@@ -1541,31 +1541,31 @@ ErrorExit:
 static int msk_fixup_ssa( char *dst, int max, const char *src, int src_size, int time, int duration )
 {
 	const char *layer = NULL;
-	const char *ptr = src; 
+	const char *ptr = src;
 	const char *end = src + src_size;
-	
+
 	// skip the count
 	for ( ; *ptr != ',' && ptr < end - 1; ptr++ );
-	
+
 	// we are at the layer tag
 	if ( *ptr == ',' )
 		layer = ++ptr;
-	
+
 	// find next comma
 	for ( ; *ptr != ',' && ptr < end - 1; ptr++ );
-	
+
 	// we are at the rest to copy verbatim
 	if ( layer && *ptr == ',' ) {
 		int sc =  time / 10;
 		int ec = (time + duration) / 10;
-		
+
 		int sh  = sc / 360000;
 		    sc -= 360000 * sh;
 		int sm  = sc / 6000;
 		    sc -= 6000 * sm;
 		int ss  = sc / 100;
 		    sc -= 100 * ss;
-		
+
 		int eh  = ec / 360000;
 		    ec -= 360000 * eh;
 		int em  = ec / 6000;
@@ -1573,11 +1573,11 @@ static int msk_fixup_ssa( char *dst, int max, const char *src, int src_size, int
 		int es  = ec / 100;
 		    ec -= 100 * es;
 		char *layere = (char*)ptr;
-		
+
 		*layere = '\0';
 		snprintf( dst, max, "Dialogue: %s,%d:%02d:%02d.%02d,%d:%02d:%02d.%02d,", layer, sh, sm, ss, sc, eh, em, es, ec );
 		*layere = ',';
-		
+
 		max -= strlen(dst) + 3;
 		char *d = dst + strlen(dst);
 		ptr ++;
@@ -1624,7 +1624,7 @@ static int _get_subtitle_cdata( STREAM *s, CLEVER_BUFFER *sub_buffer, STREAM_CDA
 	if( sub_buffer->size < packet->size + 128 ) {
 serprintf("realloc %d -> %d \r\n", sub_buffer->size, packet->size );
 		if ( realloc_clever_buffer( sub_buffer, packet->size + 128 ) ) {
-			_dispose_packet( packet );			
+			_dispose_packet( packet );
 			return 1;
 		}
 	}
@@ -1640,19 +1640,22 @@ serprintf("realloc %d -> %d \r\n", sub_buffer->size, packet->size );
 	cdata->pos        = packet->pos;
 DBGC32 serprintf("  S  siz %6d  pos %8lld   tim %8d  pkt %6d  %8d\r\n", packet->size, packet->pos, cdata->time, ff_p->sq.packets, ff_p->sq.mem_used );
 
-	
+
 	int duration_rst = GET_SUB_TS( packet->duration );
 	int duration_ts = RST_TO_TS_DELTA(duration_rst, int);
+	// Prepend the 4-byte duration natively!
 	if( s->subtitle->format == SUB_FORMAT_SSA ) {
-		cdata->size = msk_fixup_ssa( sub_buffer->data, sub_buffer->size, packet->data, packet->size, cdata->time, duration_ts );
+		memcpy(sub_buffer->data, &duration_ts, sizeof(int));
+		memcpy(sub_buffer->data + sizeof(int), packet->data, packet->size);
+		cdata->size = packet->size + sizeof(int);
 	} else if( s->subtitle->format == SUB_FORMAT_TEXT ) {
 		cdata->size = msk_fixup_srt( sub_buffer->data, sub_buffer->size, packet->data, packet->size, cdata->time, duration_ts );
 	} else {
-		memcpy( sub_buffer->data, packet->data, packet->size );
-	}
+        memcpy( sub_buffer->data, packet->data, packet->size );
+    }
 	cdata->valid = CHUNK_VALID;
 
-	_dispose_packet( packet );			
+	_dispose_packet( packet );
 	return 0;
 }
 
@@ -1677,7 +1680,7 @@ static int _get_index( STREAM *s, int *time, void **data, int *size )
 		*data = NULL;
 	if( size )
 		*size = 0;
-	
+
 	return 1;
 }
 
@@ -1715,7 +1718,7 @@ static int _calc_rate( STREAM *s ) {
 			}
 //serprintf("A: 1st %8d  last %8d  diff %8d  rate %8d\r\n", first_time, last_time, s->atime_parsed, s->acurrent_rate );
 		}
-		
+
 		pthread_mutex_unlock( &ff_p->aq.mutex );
 	}
 	if( s->video->valid ) {
@@ -1738,18 +1741,18 @@ static int _calc_rate( STREAM *s ) {
 			}
 //serprintf("V: 1st %8d  last %8d  diff %8d  rate %8d\r\n", first_time, last_time, s->vtime_parsed, s->vcurrent_rate );
 		}
-		
+
 		pthread_mutex_unlock( &ff_p->vq.mutex );
 	}
 
-	
+
 	if ( s->audio->valid && s->video->valid ) {
-		s->time_parsed  = MIN( s->vtime_parsed,  s->atime_parsed  ); 
-		s->current_rate = MAX( s->vcurrent_rate, s->acurrent_rate ); 
+		s->time_parsed  = MIN( s->vtime_parsed,  s->atime_parsed  );
+		s->current_rate = MAX( s->vcurrent_rate, s->acurrent_rate );
 	} else if ( s->audio->valid ) {
 		s->time_parsed  = s->atime_parsed;
 		s->current_rate = s->acurrent_rate;
-	} else { 
+	} else {
 		s->time_parsed  = s->vtime_parsed;
 		s->current_rate = s->vcurrent_rate;
 	}
@@ -1766,19 +1769,19 @@ static int _calc_rate( STREAM *s ) {
 static STREAM_PARSER_STATS *_get_stats( STREAM *s, STREAM_PARSER_STATS *stats )
 {
 	memset( stats, 0, sizeof( *stats ) );
-	
+
 	stats->buffer_size   = ff_p->buffer_size;
 	stats->buffer_used   = ff_p->aq.mem_used + ff_p->vq.mem_used;
-	
+
 	stats->audio_chunks  = ff_p->aq.packets;
 	stats->video_chunks  = ff_p->vq.packets;
 
 	stats->atime_parsed  = s->atime_parsed;
 	stats->vtime_parsed  = s->vtime_parsed;
-	
+
 	stats->acurrent_rate = s->acurrent_rate;
 	stats->vcurrent_rate = s->vcurrent_rate;
-	
+
 	return stats;
 }
 
@@ -1807,7 +1810,7 @@ static STREAM_PARSER stream_parser_FFMPEG = {
 
 #ifndef CONFIG_LIVE555_RTSP
 STREAM_REGISTER_PARSER( ETYPE_RTSP, stream_parser_FFMPEG );
-static STREAM_IO *_dummy_new( STREAM_URL *src ) 
+static STREAM_IO *_dummy_new( STREAM_URL *src )
 {
 	return NULL;
 }
@@ -1829,7 +1832,7 @@ DBGP serprintf("ReadFFMPEGInfo: ");
 	if( !(priv = (FF_PRIV*)amalloc( sizeof( FF_PRIV ) ) ) ) {
 		return 1;
 	}
-	
+
 	memset( priv, 0, sizeof( FF_PRIV ) );
 	av_init_props( priv );
 
@@ -2029,7 +2032,7 @@ static FILE_INFO_REG fi_ogg = {
 	NULL,
 };
 
-static void _reg_ff( void ) 
+static void _reg_ff( void )
 {
 serprintf("register lavf for AVI\r\n");
 	stream_unregister_parser( ETYPE_AVI );
@@ -2050,7 +2053,7 @@ serprintf("register lavf for MKV info\r\n");
 serprintf("register lavf for TS\r\n");
 	stream_unregister_parser( ETYPE_MPEG_TS );
 	stream_register_parser( &reg_ts );
-	
+
 serprintf("register lavf for PS\r\n");
 	stream_unregister_parser( ETYPE_MPEG_PS );
 	stream_register_parser( &reg_ps );

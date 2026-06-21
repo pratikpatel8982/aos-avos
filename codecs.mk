@@ -13,7 +13,7 @@
 # limitations under the License.
 
 ifeq ($(BUILD_FROM),ARCBUILD)
-audiocompress: 
+audiocompress:
 	$(MAKE) --directory ../audiocompress ARCH=$(ARCH) REL=$(REL) $(ARCH)/audiocompress.a
 
 audiocompress-clean:
@@ -22,20 +22,20 @@ endif #($(BUILD_FROM),ARCBUILD)
 
 ifeq ($(AUDIO),ON)
  	DEFINES += -DCONFIG_AUDIO
-	
-	DEFINES += -DCONFIG_MP3			# MP3 
+
+	DEFINES += -DCONFIG_MP3			# MP3
 	DEFINES += -DCONFIG_PCM			# PCM/ADPCM
 	DEFINES += -DCONFIG_WMA			# WMA
-	DEFINES += -DCONFIG_WMA_PRO		# WMA PRO	
-	DEFINES += -DCONFIG_WMA_SPEECH		# WMA SPEECH	
-	DEFINES += -DCONFIG_WMA_LOSSLESS	# WMA LOSSLESS	
+	DEFINES += -DCONFIG_WMA_PRO		# WMA PRO
+	DEFINES += -DCONFIG_WMA_SPEECH		# WMA SPEECH
+	DEFINES += -DCONFIG_WMA_LOSSLESS	# WMA LOSSLESS
 	DEFINES += -DCONFIG_AAC			# AAC
 	DEFINES += -DCONFIG_FLAC		# FLAC
 	DEFINES += -DCONFIG_OGG			# OGG VORBIS
 	DEFINES += -DCONFIG_WAVPACK		# WAVPACK
 	DEFINES += -DCONFIG_TTA			# TTA
 	DEFINES += -DCONFIG_COOK		# RA8LBR aka COOK
-	
+
 	SHARED_LIBS += -lz
 
        ifeq ($(AUDIO_FF_AMR),ON)
@@ -44,7 +44,7 @@ ifeq ($(AUDIO),ON)
         ifeq ($(AUDIO_FF_AMR_WB),ON)
  		DEFINES += -DCONFIG_AMR
        endif
-	
+
 	ifeq ($(ARCH),i586)
 		DEFINES += -DCONFIG_DTS			# DTS
 		DEFINES += -DCONFIG_FF_MP3
@@ -61,7 +61,7 @@ ifeq ($(AUDIO),ON)
 		DEFINES += -DCONFIG_FF_AAC
 		DEFINES += -DCONFIG_FF_WMA
 		DEFINES += -DCONFIG_FF_WMA_PRO
-	endif	
+	endif
 
 	ifeq ($(AUDIO_COMPRESS),ON)
 		DEFINES += -DCONFIG_AUDIO_COMPRESS
@@ -93,7 +93,7 @@ endif
 ifeq ($(VIDEO),ON)
         DEFINES += -DCONFIG_VIDEO
         DEFINES += -DCONFIG_STREAM		# for video playing backend
-	
+
 	DEFINES += -DCONFIG_ASF			# parser:  ASF video container format
 	DEFINES += -DCONFIG_MPEG_PS		# parser:  MPEG2 program stream
 	DEFINES += -DCONFIG_MPEG_TS		# parser:  MPEG2 transport stream
@@ -103,31 +103,37 @@ ifeq ($(VIDEO),ON)
 	DEFINES += -DCONFIG_FLV			# parser:  FLV
 	DEFINES += -DCONFIG_MKV			# parser:  Matroska
 	DEFINES += -DCONFIG_WTV			# parser:  WTV via lavf
-	
-	DEFINES += -DCONFIG_MPG4		# decoder: MPG4	
-	DEFINES += -DCONFIG_MPEG2		# decoder: MPEG2  
+
+	DEFINES += -DCONFIG_MPG4		# decoder: MPG4
+	DEFINES += -DCONFIG_MPEG2		# decoder: MPEG2
 	DEFINES += -DCONFIG_DIVX311		# decoder: DIVX311
-	DEFINES += -DCONFIG_H264		# decoder: H.264  
+	DEFINES += -DCONFIG_H264		# decoder: H.264
 	DEFINES += -DCONFIG_HEVC		# decoder: HEVC
-	DEFINES += -DCONFIG_WMV			# decoder: WMV9   
-	DEFINES += -DCONFIG_VC1			# decoder: VC1   
-	DEFINES += -DCONFIG_MJPG		# decoder: MJPG   
+	DEFINES += -DCONFIG_WMV			# decoder: WMV9
+	DEFINES += -DCONFIG_VC1			# decoder: VC1
+	DEFINES += -DCONFIG_MJPG		# decoder: MJPG
 	DEFINES += -DCONFIG_VP6			# decoder: ON2 VP6
 	DEFINES += -DCONFIG_H263		# decoder: H263 for 3GPP files
 	DEFINES += -DCONFIG_3GP
-	
+
 	DEFINES += -DCONFIG_SUBTITLES
         DEFINES += -DCONFIG_VOBSUB
+
+        ifeq ($(LIBASS),ON)
+		DEFINES += -DCONFIG_LIBASS
+		INCLUDES += -I$(LOCAL_PATH)/../../native/prebuilt/libass-deps/$(TARGET_ARCH_ABI)/include
+		SHARED_LIBS      += -lm
+	endif
 
 	ifeq ($(VIDEO_FFMPEG),ON)
 		# FFmpeg
 		DEFINES += -DCONFIG_FFMPEG_VIDEO
 		DEFINES += -DCONFIG_FFMPEG_AUDIO
 		DEFINES += -DCONFIG_FFMPEG_PARSER
-		CSRC_STREAM_CODEC += codec_ffmpeg_video.c 
-		CSRC_STREAM_CODEC += codec_lavc_async.c 
-		CSRC_STREAM_CODEC += codec_ffmpeg_audio.c 
-		
+		CSRC_STREAM_CODEC += codec_ffmpeg_video.c
+		CSRC_STREAM_CODEC += codec_lavc_async.c
+		CSRC_STREAM_CODEC += codec_ffmpeg_audio.c
+
 		ifneq (,$(LIBAV_CONFIG_DIR))
 			INCLUDES += -I$(LIBAV_CONFIG_DIR)/include
 		endif
@@ -206,7 +212,7 @@ ifeq ($(VIDEO),ON)
 		DEFINES += -DCONFIG_FF_WMV
 		DEFINES += -DCONFIG_FF_RV1020
 		DEFINES += -DCONFIG_FF_RV3040
-	else	
+	else
 		LIBDCE =
 		LIBION =
 		ifeq ($(SINK_VIDEO),ANDROID)
@@ -231,7 +237,7 @@ ifeq ($(VIDEO),ON)
 		ifeq ($(SFDEC),ON)
 			DEFINES += -DCONFIG_SFDEC
 			AVOS_SHARED_LIBS += -lsfdec
-			CSRC_STREAM_CODEC += codec_sfdec.c codec_sfdec2.c codec_mediacodec_audio.c 
+			CSRC_STREAM_CODEC += codec_sfdec.c codec_sfdec2.c codec_mediacodec_audio.c
 			INCLUDES += -I$(ANDROID_DIR)/libsfdec
 		endif
 	endif

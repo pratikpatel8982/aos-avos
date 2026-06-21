@@ -23,6 +23,8 @@
 #include "util.h"
 
 #include <string.h>
+#include "sub_engine.h"
+extern SUB_ENGINE *g_sub_engine;
 
 #define DBGS if(Debug[DBG_STREAM])
 #define DBG  if(Debug[DBG_SUB])
@@ -47,9 +49,9 @@ serprintf("error opening sub_dec!\r\n");
 			return 1;
 		}
 		return 0;
-	} 
+	}
 serprintf("no sub_dec found!\r\n");
-	
+
 	return 1;
 }
 
@@ -104,7 +106,7 @@ DBG serprintf("stream_subtitle: alloc_sub_frame: %dx%d\n", w, h);
 			// this is for text subs, so just allocate a large enuf buffer
 			s->subtitle_frame = frame_alloc_with_cs_and_mem( 128, 8, cs, STREAM_MEM_NRM, 1);
 		}
-	}					 
+	}
 }
 
 static void _output_sub( STREAM *s, VIDEO_FRAME *f, uint64_t pos )
@@ -117,10 +119,10 @@ DBG serprintf("[diff %4d]  ", f->time - t );
 			f->time = t;
 		}
 	}
-	
+
 	// we need to adjust the time the users sees for the delay:
 	f->time += RST_TO_TS_DELTA(s->subtitle_offset, int);
-	
+
 	if( s->subtitle->gfx ) {
 DBG serprintf("sub int GFX: video %8d  start %8d  dur %8d  [%dx%d]\r\n", s->video_time, f->time, f->duration, f->window.width, f->window.height );
 	} else {
@@ -141,18 +143,24 @@ static void _get_next_int_sub( STREAM *s, int time )
 {
 	if( !s->seek ) {
 		if( !s->sub_dec ) {
-			// try to get a sub decoder
-			s->sub_dec = stream_get_new_dec_sub( s->subtitle->format );
+		    // --- NEW ROUTING LOGIC FOR INTERNAL SUBS ---
+			if (s->subtitle->format == SUB_FORMAT_SSA) {
+                // Do NOT try to get a legacy decoder.
+                // We successfully hijacked the initialization for the new engine!
+                serprintf("Routing internal SSA/ASS initialization to new sub_engine!\n");
+            } else {
+                // try to get a sub decoder
+    			s->sub_dec = stream_get_new_dec_sub( s->subtitle->format );
+    			// open the decoder
+    			if( stream_open_sub_dec( s ) ) {
+    				// no subs, disable it
+    				stream_drop_subtitles( s );
+    				return;
+                }
+            }
 
-			// open the decoder		
-			if( stream_open_sub_dec( s ) ) {
-				// no subs, disable it
-				stream_drop_subtitles( s );
-				return;
-			} 
-			
 			alloc_sub_frame( s );
-			
+
 			if( !s->subtitle_frame ) {
 serprintf("cannot allocate subtitle frame!\r\n");
 				stream_close_sub_dec( s );
@@ -162,7 +170,7 @@ serprintf("cannot allocate subtitle frame!\r\n");
 			}
 		}
 		if( !s->cdata_sub.valid ) {
-			if ( !s->parser->get_subtitle_cdata ) { 
+			if ( !s->parser->get_subtitle_cdata ) {
 				return;
 			}
 			if( s->parser->get_subtitle_cdata( s, &s->sub_buffer, &s->cdata_sub ) ) {
@@ -171,7 +179,7 @@ serprintf("cannot allocate subtitle frame!\r\n");
 				return;
 			}
 		}
-		
+
 		if( s->cdata_sub.valid ) {
 			if( time == -1 ) {
 				// no video yet...
@@ -179,12 +187,33 @@ serprintf("cannot allocate subtitle frame!\r\n");
 			}
 			// if the sub has a time of -1 just let it pass...
 			if( s->cdata_sub.time == -1 || s->cdata_sub.time <= time ) {
-				VIDEO_FRAME *f = s->subtitle_frame;
-//DBG serprintf("SUB: size %5d  sub %8d  video %8d\r\n", s->cdata_sub.size, s->cdata_sub.time, s->video_time );
-				s->sub_dec->decode( s->sub_dec, s->sub_buffer.data, s->cdata_sub.size, s->cdata_sub.time, &f ); 
-				s->cdata_sub.valid = 0;
-				if( f ) {
-					_output_sub( s, f, s->cdata_sub.pos );
+				if (g_sub_engine) {
+					int duration = 0;
+					uint8_t *payload = s->sub_buffer.data;
+					int payload_size = s->cdata_sub.size;
+
+					// Extract the 4-byte duration for SSA
+					if ((s->subtitle->format == SUB_FORMAT_SSA )
+						&& payload_size >= (int)sizeof(int)) {
+						duration = *(int*)payload;
+					payload += sizeof(int);
+					payload_size -= sizeof(int);
+						}
+
+						sub_engine_feed(g_sub_engine, payload, payload_size, s->cdata_sub.time, duration);
+				}
+
+				// If it's SSA, bypass the old Java/Bitmap path completely
+				if (s->subtitle->format == SUB_FORMAT_SSA) {
+					s->cdata_sub.valid = 0;
+				} else {
+					// Fallback for old formats (until we port them)
+					VIDEO_FRAME *f = s->subtitle_frame;
+					s->sub_dec->decode( s->sub_dec, s->sub_buffer.data, s->cdata_sub.size, s->cdata_sub.time, &f );
+					s->cdata_sub.valid = 0;
+					if( f ) {
+						_output_sub( s, f, s->cdata_sub.pos );
+					}
 				}
 			}
 		}
@@ -199,20 +228,25 @@ serprintf("cannot allocate subtitle frame!\r\n");
 static void _get_next_ext_sub( STREAM *s, int time )
 {
 	if( !s->seek ) {
-		if( !s->sub_dec && s->subtitle->format == SUB_FORMAT_DVD_GFX ) {
-			// try to get a sub decoder
-			s->sub_dec = stream_get_new_dec_sub( s->subtitle->format );
+        // --- NEW ROUTING LOGIC FOR EXTERNAL SUBS ---
+        if (s->subtitle->format == SUB_FORMAT_SSA) {
+                serprintf("Routing external SSA/ASS initialization to new sub_engine!\n");
+        } else {
+    		if( !s->sub_dec && s->subtitle->format == SUB_FORMAT_DVD_GFX ) {
+    			// try to get a sub decoder
+    			s->sub_dec = stream_get_new_dec_sub( s->subtitle->format );
 
-			// open the decoder		
-			if( s->sub_dec && stream_open_sub_dec( s ) ) {
-				// no subs, disable it
-				stream_drop_subtitles( s );
-				return;
-			} 
+    			// open the decoder
+    			if( s->sub_dec && stream_open_sub_dec( s ) ) {
+    				// no subs, disable it
+    				stream_drop_subtitles( s );
+    				return;
+    			}
+			}
 		}
-		
+
 		alloc_sub_frame( s );
-		
+
 		if( !s->subtitle_frame ) {
 serprintf("cannot allocate subtitle frame!\r\n");
 			stream_close_sub_dec( s );
@@ -220,7 +254,7 @@ serprintf("cannot allocate subtitle frame!\r\n");
 			stream_drop_subtitles( s );
 			return;
 		}
-		
+
 		if( time == -1 ) {
 			// no video yet...
 			return;
@@ -237,13 +271,23 @@ serprintf("cannot allocate subtitle frame!\r\n");
 				return;
 			}
 			if( f && f->valid ) {
-DBG serprintf("got gfx data: %8d %8d  size %d\r\n", f->time, f->duration, f->valid );
-				VIDEO_FRAME *f2 = s->subtitle_frame;
-				
-				s->sub_dec->decode( s->sub_dec, f->data[0], f->valid, f->time, &f2 ); 
-				if( f2 ) {
-					f2->time = f->time;
-					_output_sub( s, f2, 0 );
+				DBG serprintf("got gfx data: %8d %8d  size %d\r\n", f->time, f->duration, f->valid );
+
+				// --- NEW: Feed the new C-engine! ---
+				if (g_sub_engine) {
+					sub_engine_feed(g_sub_engine, f->data[0], f->valid, f->time, f->duration);
+				}
+
+				// If it's SSA, bypass old renderer
+				if (s->subtitle->format == SUB_FORMAT_SSA) {
+					// Bypass old renderer
+				} else {
+					VIDEO_FRAME *f2 = s->subtitle_frame;
+					s->sub_dec->decode( s->sub_dec, f->data[0], f->valid, f->time, &f2 );
+					if( f2 ) {
+						f2->time = f->time;
+						_output_sub( s, f2, 0 );
+					}
 				}
 			}
 		} else {
@@ -251,9 +295,19 @@ DBG serprintf("got gfx data: %8d %8d  size %d\r\n", f->time, f->duration, f->val
 			if( stream_sub_ext_get_subtitle_data( s, &f, time ) ) {
 				return;
 			}
-			
+
 			if( f ) {
-				_output_sub( s, f, 0 );
+				if (g_sub_engine && f->data[0] && s->subtitle->format == SUB_FORMAT_SSA) {
+					int text_len = strlen((char*)f->data[0]);
+					sub_engine_feed(g_sub_engine, f->data[0], text_len, f->time, f->duration);
+				}
+
+				if (s->subtitle->format == SUB_FORMAT_SSA) {
+					// Bypass old renderer for ASS
+				} else {
+        // External SRTs fall through to the old Java pipeline here!
+					_output_sub( s, f, 0 );
+				}
 			}
 		}
 	}
@@ -297,8 +351,8 @@ void _sub_decode( STREAM *s )
 void *stream_sub_dec_thread( void *data )
 {
 	STREAM *s = (STREAM *)data;
-DBGS serprintf("PID[%5d] stream_sub_dec_thread::Starting\r\n", getpid() );	
-	
+DBGS serprintf("PID[%5d] stream_sub_dec_thread::Starting\r\n", getpid() );
+
 	while( thread_state_get( &s->sub_tstate ) != THREAD_EXIT ) {
 		thread_state_ack( &s->sub_tstate );
 		if( thread_state_get( &s->sub_tstate ) == THREAD_RUNNING ) {
@@ -306,7 +360,7 @@ DBGS serprintf("PID[%5d] stream_sub_dec_thread::Starting\r\n", getpid() );
 		}
 		stream_yield_RT();
 	}
-DBGS serprintf("PID[%5d] stream_sub_dec_thread::Exiting\r\n", getpid() );	
+DBGS serprintf("PID[%5d] stream_sub_dec_thread::Exiting\r\n", getpid() );
  	return NULL;
 }
 
@@ -387,25 +441,25 @@ DBGS serprintf("stream_check_subtitles, has new ext subtitles\r\n");
 //
 // *****************************************************************************
 int stream_set_subtitle_stream( STREAM *s, int sub_stream )
-{	
+{
 serprintf("stream_set_subtitle_stream( %d )\r\n", sub_stream );
- 
+
 	if( !s->open ) {
 serprintf("SsS: not open!\r\n");
 		return 1;
 	}
-	
+
 	if( !s->subtitle->valid ) {
 serprintf("SsS: not sub!\r\n");
 		return 1;
 	}
 
 	if( sub_stream >= s->av.subs_max ) {
-serprintf("SsS: sub_stream > av.subs_max\n");	
+serprintf("SsS: sub_stream > av.subs_max\n");
 		return 1;
 	}
 	if( sub_stream == s->av.subs ) {
-serprintf("SsS: sub_stream already set\n");	
+serprintf("SsS: sub_stream already set\n");
 //		return 0;
 	}
 
@@ -414,7 +468,7 @@ serprintf("SsS: sub_stream already set\n");
 	// idle threads to make sure they are at a known state
 	thread_state_set( &s->engine_tstate, THREAD_IDLE );
 	thread_state_set( &s->sub_tstate,    THREAD_IDLE );
-	
+
 	// close old subtitle decoder
 	stream_close_sub_dec( s );
 
@@ -424,7 +478,7 @@ serprintf("SsS: sub_stream already set\n");
 
 	s->av.subs  = sub_stream;
 	s->subtitle = s->av.sub + s->av.subs;
-	
+
 	// run threads again
 	thread_state_set( &s->engine_tstate, THREAD_RUNNING );
 	thread_state_set( &s->sub_tstate,    THREAD_RUNNING );
@@ -457,7 +511,7 @@ VIDEO_FRAME *stream_get_current_subtitle( STREAM *s )
 // *****************************************************************************
 void stream_set_subtitle_offset( STREAM *s, int offset )
 {
-	if( s ) { 
+	if( s ) {
 		s->subtitle_offset = offset;
 	}
 }
@@ -482,14 +536,14 @@ void stream_set_subtitle_ratio( STREAM *s, int n, int d )
 // ************************************************************
 void stream_set_subtitle_url( STREAM *s, const char **url_list )
 {
-DBGS serprintf("stream_set_subtitle_url\n");		
+DBGS serprintf("stream_set_subtitle_url\n");
 	if( s && url_list ) {
 		int i;
 		for( i = 0; i < SUB_TRACK_MAX && url_list[i]; i++ ) {
 DBGS serprintf("sub_url: %s\n", url_list[i] );
 			if ( s->sub_url[i + 1] != NULL )
 				afree( s->sub_url[i + 1] );
-			s->sub_url[i + 1] = astrdup( url_list[i] );		
+			s->sub_url[i + 1] = astrdup( url_list[i] );
 		}
 	}
 }
