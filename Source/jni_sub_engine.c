@@ -12,19 +12,8 @@ static SUB_ENGINE* get_engine(jlong handle) {
     return (SUB_ENGINE*)(intptr_t)handle;
 }
 
-JNIEXPORT jlong JNICALL Java_com_archos_mediacenter_video_player_SubtitleEngine_nativeCreate(JNIEnv *env, jobject thiz, jstring fallbackFontPath) {
-    const char *font_path = NULL;
-    if (fallbackFontPath != NULL) {
-        font_path = (*env)->GetStringUTFChars(env, fallbackFontPath, NULL);
-    }
-
-    /* sub_engine_create() strdup()s this internally, so it's safe to
-    * release Java's buffer immediately after the call returns —
-    * SUB_ENGINE does not hold onto the pointer we pass here. */
-    SUB_ENGINE *eng = sub_engine_create(font_path);
-    if (font_path != NULL) {
-        (*env)->ReleaseStringUTFChars(env, fallbackFontPath, font_path);
-    }
+JNIEXPORT jlong JNICALL Java_com_archos_mediacenter_video_player_SubtitleEngine_nativeCreate(JNIEnv *env, jobject thiz) {
+    SUB_ENGINE *eng = sub_engine_create();
 
     g_sub_engine = eng; // Store it globally
     return (jlong)(intptr_t)eng;

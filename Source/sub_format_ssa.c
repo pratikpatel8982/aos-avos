@@ -8,9 +8,6 @@
 #define LOG_TAG "SubFormatSSA"
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 
-#define LIBASS_DEFAULT_FONT   "/system/fonts/Roboto-Regular.ttf"
-#define LIBASS_DEFAULT_FAMILY "sans-serif"
-
 typedef struct {
     ASS_Library    *library;
     ASS_Renderer   *renderer;
@@ -47,11 +44,8 @@ static int ssa_open(SUB_FORMAT_BACKEND *be, const SUB_FORMAT_OPEN_PARAMS *params
     if (params->codec_private && params->codec_private_size > 0) {
         ass_process_codec_private(ctx->track, (char *)params->codec_private, params->codec_private_size);
     }
-    const char *font_path = (params->fallback_font_path && params->fallback_font_path[0])
-                ? params->fallback_font_path : LIBASS_DEFAULT_FONT;
 
-    ass_set_fonts(ctx->renderer, font_path, LIBASS_DEFAULT_FAMILY, ASS_FONTPROVIDER_NONE, NULL, 1);
-    LOGD("ssa_open: using fallback font: %s", font_path);
+    ass_set_fonts(ctx->renderer, NULL, "sans-serif", ASS_FONTPROVIDER_FONTCONFIG, NULL, 1);
 
     be->priv = ctx;
     return 0;

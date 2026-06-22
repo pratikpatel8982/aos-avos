@@ -22,7 +22,7 @@ extern "C" {
 #endif
 
 /* ── Lifecycle ── */
-JNIEXPORT jlong  JNICALL Java_com_archos_mediacenter_video_player_SubtitleEngine_nativeCreate(JNIEnv *env, jobject thiz, jstring fallbackFontPath);
+JNIEXPORT jlong  JNICALL Java_com_archos_mediacenter_video_player_SubtitleEngine_nativeCreate(JNIEnv *env, jobject thiz);
 JNIEXPORT void   JNICALL Java_com_archos_mediacenter_video_player_SubtitleEngine_nativeDestroy(JNIEnv *env, jobject thiz, jlong handle);
 
 /* ── Track control (called by avos's existing subtitle-track-switch path,

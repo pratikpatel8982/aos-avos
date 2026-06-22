@@ -16,7 +16,6 @@ struct SUB_ENGINE {
     SUB_RENDERER         *renderer;
     SUB_USER_STYLE       *style;
     SUB_FORMAT_BACKEND   *active_backend;
-    char                 *fallback_font_path;
 
     int is_paused;
     sub_engine_clock_fn clock_fn;
@@ -24,11 +23,10 @@ struct SUB_ENGINE {
     pthread_mutex_t lock;
 };
 
-SUB_ENGINE *sub_engine_create(const char *fallback_font_path) {
+SUB_ENGINE *sub_engine_create(void) {
     SUB_ENGINE *eng = calloc(1, sizeof(SUB_ENGINE));
     eng->renderer = sub_render_gl_create();
     eng->style    = sub_style_create();
-    eng->fallback_font_path = fallback_font_path ? strdup(fallback_font_path) : NULL;
     pthread_mutex_init(&eng->lock, NULL);
     return eng;
 }
@@ -39,7 +37,6 @@ void sub_engine_destroy(SUB_ENGINE *eng) {
     sub_engine_close_track(eng);
     sub_render_gl_destroy(eng->renderer);
     sub_style_destroy(eng->style);
-    if (eng->fallback_font_path) free(eng->fallback_font_path);
     pthread_mutex_destroy(&eng->lock);
     free(eng);
 }
@@ -61,7 +58,7 @@ int sub_engine_open_track(SUB_ENGINE *eng, SUB_FORMAT_ID format_id, int video_w,
     SUB_FORMAT_OPEN_PARAMS params = {
         .video_w = video_w, .video_h = video_h,
         .codec_private = codec_private, .codec_private_size = codec_private_size,
-        .user_style = eng->style, .fallback_font_path = eng->fallback_font_path
+        .user_style = eng->style
     };
 
     int rc = backend->open(backend, &params);

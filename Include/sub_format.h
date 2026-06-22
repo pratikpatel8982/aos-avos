@@ -32,7 +32,6 @@ typedef struct {
                                         * it needs at open time, re-reads via
                                         * sub_style_snapshot() each frame if
                                         * it wants live updates              */
-    const char *fallback_font_path;   /* NEW — owned and computed by Java */
 } SUB_FORMAT_OPEN_PARAMS;
 
 /*

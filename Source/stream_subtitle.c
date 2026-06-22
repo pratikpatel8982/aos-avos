@@ -147,7 +147,7 @@ static void _get_next_int_sub( STREAM *s, int time )
 			if (s->subtitle->format == SUB_FORMAT_SSA) {
                 // Do NOT try to get a legacy decoder.
                 // We successfully hijacked the initialization for the new engine!
-                serprintf("Routing internal SSA/ASS initialization to new sub_engine!\n");
+                //serprintf("Routing internal SSA/ASS initialization to new sub_engine!\n");
             } else {
                 // try to get a sub decoder
     			s->sub_dec = stream_get_new_dec_sub( s->subtitle->format );
@@ -230,7 +230,7 @@ static void _get_next_ext_sub( STREAM *s, int time )
 	if( !s->seek ) {
         // --- NEW ROUTING LOGIC FOR EXTERNAL SUBS ---
         if (s->subtitle->format == SUB_FORMAT_SSA) {
-                serprintf("Routing external SSA/ASS initialization to new sub_engine!\n");
+                //serprintf("Routing external SSA/ASS initialization to new sub_engine!\n");
         } else {
     		if( !s->sub_dec && s->subtitle->format == SUB_FORMAT_DVD_GFX ) {
     			// try to get a sub decoder

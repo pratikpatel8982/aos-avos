@@ -20,7 +20,7 @@ ifeq ($(UNAME_S),Linux)
 LDFLAGS += -Wl,-z,max-page-size=16384
 endif
 ifeq ($(ASAN),1)
-LDFLAGS += -g -fsanitize=address 
+LDFLAGS += -g -fsanitize=address
 endif
 DEFINES =
 INCLUDES =
@@ -100,7 +100,7 @@ endif
 SHARED_LIBS += -ldl
 
 # AVOS LIB
-# 
+#
 CSRC_AVOS_CORE = \
 	libavos.c \
 	atime.c athread.c cbe.c \
@@ -135,7 +135,7 @@ CSRC_STREAM_CORE = \
 	stream_config.c \
 	stream_alloc.c \
 	stream_dumper.c \
-	stream_global.c stream_sync.c  
+	stream_global.c stream_sync.c
 
 CSRC_STREAM_MISC = \
 	mpeg2.c h264.c mpg4.c realvideo.c wmv.c downmix.c pts_reorder.c hevc.c
@@ -148,7 +148,7 @@ CSRC_STREAM_PARSER = \
 	stream_parser.c \
 	stream_parser_ffmpeg.c \
 	dts.c
-	
+
 CSRC_STREAM_CODEC = \
 	codec_yuv.c \
 	codec_textsub.c vobsub.c codec_vobsub.c codec_utils.c  \
@@ -161,13 +161,13 @@ CSRC_STREAM_SINK = \
 
 CSRC_STREAM_SUB = \
 	stream_subtitle.c stream_sub_ext.c \
-	subtitle_formats.c subtitle_ssa.c subtitle_srt.c subtitle_smi.c subtitle_sub.c subtitle_idx.c \
+	subtitle_formats.c  sub_format_ssa.c subtitle_srt.c subtitle_smi.c subtitle_sub.c subtitle_idx.c \
 	subtitle_mpl2.c subtitle_vtt.c
 
 CSRC_AUDIO = \
 	id3tag.c mp3.c \
 	pcm_autogain.c
-	
+
 CSRC += $(CSRC_AVOS_CORE) $(CSRC_STREAM_CORE) $(CSRC_STREAM_MISC) $(CSRC_STREAM_IO) \
         $(CSRC_STREAM_PARSER) $(CSRC_STREAM_CODEC) $(CSRC_STREAM_SINK) $(CSRC_STREAM_SOURCE) \
 	$(CSRC_STREAM_SUB) $(CSRC_AUDIO)
@@ -177,7 +177,7 @@ CSRC += $(CSRC_AVOS_CORE) $(CSRC_STREAM_CORE) $(CSRC_STREAM_MISC) $(CSRC_STREAM_
 #
 CSRC_APP = \
 	main.c app_start.c app_stop.c
-		
+
 CSRC_CLI = cli.c cli_video.c fb.c platform.c
 
 ifeq ($(CLI),ON)
@@ -185,7 +185,7 @@ CSRC_APP += $(CSRC_CLI)
 endif
 
 # assembler sources
-XASRC = 
+XASRC =
 
 ifeq ($(TARGET_ARCH_ABI),armeabi-v7a)
 XASRC += neon_yuv.S neon_rgb.S neon_memcpy.S neon_memset.S

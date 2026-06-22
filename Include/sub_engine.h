@@ -7,7 +7,7 @@
 
 typedef struct SUB_ENGINE SUB_ENGINE;
 
-SUB_ENGINE *sub_engine_create(const char *fallback_font_path);
+SUB_ENGINE *sub_engine_create(void);
 void        sub_engine_destroy(SUB_ENGINE *eng);
 
 int sub_engine_open_track(SUB_ENGINE *eng, SUB_FORMAT_ID format_id, int video_w, int video_h, const uint8_t *codec_private, int codec_private_size);
