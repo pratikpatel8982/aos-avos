@@ -11,6 +11,7 @@
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 
 extern SUB_FORMAT_BACKEND *sub_format_ssa_create(void);
+extern SUB_FORMAT_BACKEND *sub_format_srt_create(void);
 
 struct SUB_ENGINE {
     SUB_RENDERER         *renderer;
@@ -51,6 +52,8 @@ int sub_engine_open_track(SUB_ENGINE *eng, SUB_FORMAT_ID format_id, int video_w,
     SUB_FORMAT_BACKEND *backend;
     if (format_id == SUB_FMT_SSA) {
         backend = sub_format_ssa_create();
+    } else if (format_id == SUB_FMT_SRT) {
+        backend = sub_format_srt_create(); // Routes SRT to your dynamic ASS generator!
     } else {
         return -1;
     }
@@ -58,7 +61,8 @@ int sub_engine_open_track(SUB_ENGINE *eng, SUB_FORMAT_ID format_id, int video_w,
     SUB_FORMAT_OPEN_PARAMS params = {
         .video_w = video_w, .video_h = video_h,
         .codec_private = codec_private, .codec_private_size = codec_private_size,
-        .user_style = eng->style
+        .user_style = eng->style,
+        .is_plain_text_format = (format_id == SUB_FMT_SRT) // Tell backend to force styles!
     };
 
     int rc = backend->open(backend, &params);

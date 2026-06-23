@@ -32,6 +32,7 @@ typedef struct {
                                         * it needs at open time, re-reads via
                                         * sub_style_snapshot() each frame if
                                         * it wants live updates              */
+    int is_plain_text_format;        /* Tells the backend if this was converted from SRT/TXT */
 } SUB_FORMAT_OPEN_PARAMS;
 
 /*

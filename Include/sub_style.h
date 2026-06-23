@@ -28,7 +28,37 @@
  * a snapshot copy at the start of each frame, never a live pointer.
  * ------------------------------------------------------------------ */
 
-typedef struct SUB_USER_STYLE SUB_USER_STYLE;  /* opaque handle */
+typedef enum {
+    ASS_OVERRIDE_NO = 0,    // Respect the ASS file (mpv default)
+    ASS_OVERRIDE_SCALE = 1, // Respect colors/signs, but allow font scaling
+    ASS_OVERRIDE_FORCE = 2  // Nuke everything and force Java UI settings
+} ASS_OVERRIDE_MODE;
+
+// The public struct holding the exact Java UI state
+// The public struct holding the exact Java UI state
+typedef struct SUB_USER_STYLE {
+    float    font_size;
+    float    font_scale;     // NEW
+    char    *font_family;    // NEW
+    int      is_bold;        // NEW
+    int      is_italic;      // NEW
+
+    uint32_t text_color;     // Libass RGBA format
+    uint32_t outline_color;  // Libass RGBA format
+    int      outline_width;
+
+    int      bg_enabled;
+    uint32_t bg_color;       // Libass RGBA format
+
+    int      margin_bottom;  // Vertical offset
+
+    ASS_OVERRIDE_MODE override_mode;
+    uint32_t serial; // NEW: Increments whenever a user moves a slider!
+} SUB_USER_STYLE;
+
+// Lifecycle
+SUB_USER_STYLE* sub_style_create(void);
+void sub_style_destroy(SUB_USER_STYLE *style);
 
 /* Create / destroy. One instance lives for the life of the player. */
 SUB_USER_STYLE *sub_style_create(void);
@@ -40,12 +70,12 @@ void            sub_style_destroy(SUB_USER_STYLE *style);
  * effect on the next rendered frame.
  * ------------------------------------------------------------------ */
 
-void sub_style_set_text_color(SUB_USER_STYLE *style, uint8_t r, uint8_t g, uint8_t b, uint8_t a);
-void sub_style_set_outline_color(SUB_USER_STYLE *style, uint8_t r, uint8_t g, uint8_t b, uint8_t a);
-void sub_style_set_outline_width(SUB_USER_STYLE *style, float px);
+void sub_style_set_text_color(SUB_USER_STYLE *style, uint32_t argb_color);
+void sub_style_set_outline_color(SUB_USER_STYLE *style, uint32_t argb_color);
+void sub_style_set_bg_color(SUB_USER_STYLE *style, uint32_t argb_color);
 
+void sub_style_set_outline_width(SUB_USER_STYLE *style, float px);
 void sub_style_set_bg_enabled(SUB_USER_STYLE *style, int enabled);
-void sub_style_set_bg_color(SUB_USER_STYLE *style, uint8_t r, uint8_t g, uint8_t b, uint8_t a);
 void sub_style_set_bg_opacity(SUB_USER_STYLE *style, float opacity /* 0..1 */);
 
 void sub_style_set_font_size(SUB_USER_STYLE *style, float pt);
@@ -68,7 +98,7 @@ void sub_style_set_force_override(SUB_USER_STYLE *style, int force);
  * Returns a copy (not a pointer into live state) so the renderer never
  * races with a setter call from the UI thread.
  * ------------------------------------------------------------------ */
-SUB_STYLE sub_style_snapshot(const SUB_USER_STYLE *style);
+void sub_style_snapshot(const SUB_USER_STYLE *src, SUB_USER_STYLE *dst);
 
 /* Returns 1 if force_override is set (see sub_style_set_force_override). */
 int sub_style_is_forced(const SUB_USER_STYLE *style);

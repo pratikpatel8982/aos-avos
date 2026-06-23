@@ -43,8 +43,63 @@ JNIEXPORT void JNICALL Java_com_archos_mediacenter_video_player_SubtitleEngine_n
     sub_engine_detach_surface(get_engine(handle));
 }
 
-// --- Stubbed Style Setters for Phase 1 ---
-// You will map these to sub_style_set_* later when porting the UI settings.
-JNIEXPORT void JNICALL Java_com_archos_mediacenter_video_player_SubtitleEngine_nativeSetFontSize(JNIEnv *env, jobject thiz, jlong handle, jfloat pt) {}
-JNIEXPORT void JNICALL Java_com_archos_mediacenter_video_player_SubtitleEngine_nativeSetTextColor(JNIEnv *env, jobject thiz, jlong handle, jint r, jint g, jint b, jint a) {}
-// ... (Add the remaining stubs from jni_sub_engine.h here to satisfy the linker)
+// ====================================================================
+// PHASE 3: USER STYLE SETTERS (Java -> C Bridge)
+// ====================================================================
+
+JNIEXPORT void JNICALL Java_com_archos_mediacenter_video_player_SubtitleEngine_nativeSetFontSize(JNIEnv *env, jobject thiz, jlong handle, jfloat pt) {
+    sub_style_set_font_size(sub_engine_get_style(get_engine(handle)), pt);
+}
+
+JNIEXPORT void JNICALL Java_com_archos_mediacenter_video_player_SubtitleEngine_nativeSetFontScale(JNIEnv *env, jobject thiz, jlong handle, jfloat scale) {
+    sub_style_set_font_scale(sub_engine_get_style(get_engine(handle)), scale);
+}
+
+JNIEXPORT void JNICALL Java_com_archos_mediacenter_video_player_SubtitleEngine_nativeSetFontFamily(JNIEnv *env, jobject thiz, jlong handle, jstring familyName) {
+    if (!familyName) return;
+    const char *family_str = (*env)->GetStringUTFChars(env, familyName, NULL);
+    sub_style_set_font_family(sub_engine_get_style(get_engine(handle)), family_str);
+    (*env)->ReleaseStringUTFChars(env, familyName, family_str);
+}
+
+JNIEXPORT void JNICALL Java_com_archos_mediacenter_video_player_SubtitleEngine_nativeSetBold(JNIEnv *env, jobject thiz, jlong handle, jboolean bold) {
+    sub_style_set_bold(sub_engine_get_style(get_engine(handle)), bold);
+}
+
+JNIEXPORT void JNICALL Java_com_archos_mediacenter_video_player_SubtitleEngine_nativeSetItalic(JNIEnv *env, jobject thiz, jlong handle, jboolean italic) {
+    sub_style_set_italic(sub_engine_get_style(get_engine(handle)), italic);
+}
+
+JNIEXPORT void JNICALL Java_com_archos_mediacenter_video_player_SubtitleEngine_nativeSetTextColor(JNIEnv *env, jobject thiz, jlong handle, jint color) {
+    sub_style_set_text_color(sub_engine_get_style(get_engine(handle)), (uint32_t)color);
+}
+
+JNIEXPORT void JNICALL Java_com_archos_mediacenter_video_player_SubtitleEngine_nativeSetOutlineColor(JNIEnv *env, jobject thiz, jlong handle, jint color) {
+    sub_style_set_outline_color(sub_engine_get_style(get_engine(handle)), (uint32_t)color);
+}
+
+JNIEXPORT void JNICALL Java_com_archos_mediacenter_video_player_SubtitleEngine_nativeSetOutlineWidth(JNIEnv *env, jobject thiz, jlong handle, jfloat px) {
+    SUB_USER_STYLE *style = sub_engine_get_style(get_engine(handle));
+    if (style) style->outline_width = (int)px;
+}
+
+JNIEXPORT void JNICALL Java_com_archos_mediacenter_video_player_SubtitleEngine_nativeSetBackgroundEnabled(JNIEnv *env, jobject thiz, jlong handle, jboolean enabled) {
+    SUB_USER_STYLE *style = sub_engine_get_style(get_engine(handle));
+    if (style) style->bg_enabled = enabled;
+}
+
+JNIEXPORT void JNICALL Java_com_archos_mediacenter_video_player_SubtitleEngine_nativeSetBackgroundColor(JNIEnv *env, jobject thiz, jlong handle, jint color) {
+    sub_style_set_bg_color(sub_engine_get_style(get_engine(handle)), (uint32_t)color);
+}
+
+JNIEXPORT void JNICALL Java_com_archos_mediacenter_video_player_SubtitleEngine_nativeSetBackgroundOpacity(JNIEnv *env, jobject thiz, jlong handle, jfloat opacity) {
+    sub_style_set_bg_opacity(sub_engine_get_style(get_engine(handle)), opacity);
+}
+
+JNIEXPORT void JNICALL Java_com_archos_mediacenter_video_player_SubtitleEngine_nativeSetVerticalOffset(JNIEnv *env, jobject thiz, jlong handle, jfloat fraction) {
+    sub_style_set_vertical_offset(sub_engine_get_style(get_engine(handle)), fraction);
+}
+
+JNIEXPORT void JNICALL Java_com_archos_mediacenter_video_player_SubtitleEngine_nativeSetForceOverride(JNIEnv *env, jobject thiz, jlong handle, jboolean force) {
+    sub_style_set_force_override(sub_engine_get_style(get_engine(handle)), force);
+}

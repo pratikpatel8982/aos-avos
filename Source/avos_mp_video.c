@@ -130,7 +130,8 @@ static void send_subtitle(avos_mp_t *mp, avos_mp_video_t *video)
 
 	// NEW: If the track is SSA/ASS, our C OpenGL compositor handles it.
 	// Do NOT send the bitmap to Java!
-	if (video->s->av.sub[video->s->av.subs].format == SUB_FORMAT_SSA) {
+	int fmt = video->s->av.sub[video->s->av.subs].format;
+	if (fmt == SUB_FORMAT_SSA || fmt == SUB_FORMAT_TEXT) {
 		return;
 	}
 	sub_frame = stream_get_current_subtitle(video->s);
@@ -485,25 +486,13 @@ int avos_mp_video_setsubtitletrack(avos_mp_t *mp, avos_mp_video_t *video, int tr
 	if (track < 0 || track >= video->s->av.subs_max) {
 		video->send_sub = 0;
 		*ret = 1;
-		// NEW: Clear the screen if track is disabled
+		// Clear the screen if track is disabled
 		if (g_sub_engine) sub_engine_close_track(g_sub_engine);
 	} else {
 		video->send_sub = 1;
 		*ret = stream_set_subtitle_stream(video->s, track) == 0 ? 1 : 0;
-
-		// NEW: Open the track natively in our new engine
-		if (*ret && g_sub_engine) {
-			int fmt = video->s->av.sub[track].format;
-			if (fmt == SUB_FORMAT_SSA) {
-				SUB_FORMAT_ID fid = SUB_FMT_SSA;
-				sub_engine_open_track(g_sub_engine, fid,
-									  video->width, video->height,
-						  video->s->av.sub[track].extraData2,
-						  video->s->av.sub[track].extraDataSize2);
-			} else {
-				sub_engine_close_track(g_sub_engine);
-			}
-		}
+		// DO NOT open or close the track here!
+		// stream_subtitle.c will natively open it when the first packet arrives.
 	}
 	return AVOS_ERR_OK;
 }

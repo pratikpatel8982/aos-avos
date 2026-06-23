@@ -1,4 +1,5 @@
 #include "sub_format.h"
+#include "sub_style.h"
 #include <ass/ass.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,12 +10,122 @@
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 
 typedef struct {
+    double FontSize;
+    char *FontName;
+    int Bold;
+    int Italic;
+    uint32_t PrimaryColour;
+    uint32_t OutlineColour;
+    uint32_t BackColour;
+    int BorderStyle;
+    double Outline;
+    int MarginV;
+} ASS_Style_Backup;
+
+typedef struct {
     ASS_Library    *library;
     ASS_Renderer   *renderer;
     ASS_Track      *track;
     pthread_mutex_t lock;
     int             video_w, video_h;
+
+    // --- LIVE SYNC VARIABLES ---
+    const SUB_USER_STYLE *user_style_ptr;
+    int               is_plain_text;
+    ASS_Style_Backup *backups;
+    int               num_backups;
+    uint32_t          last_serial;
 } SSA_BACKEND;
+
+// Synchronizes Java UI changes safely without corrupting the original ASS track!
+static void sync_styles(SSA_BACKEND *ctx) {
+    if (!ctx->user_style_ptr || !ctx->track) return;
+
+    SUB_USER_STYLE u;
+    memset(&u, 0, sizeof(SUB_USER_STYLE)); // MUST ZERO-INITIALIZE!
+    sub_style_snapshot(ctx->user_style_ptr, &u);
+
+    // Skip heavy processing if the user hasn't touched the sliders!
+    if (u.serial == ctx->last_serial && ctx->num_backups == ctx->track->n_styles) {
+        if (u.font_family) free(u.font_family);
+        return;
+    }
+
+    // 1. If the track added new styles, expand our backup array!
+    if (ctx->num_backups < ctx->track->n_styles) {
+        ctx->backups = realloc(ctx->backups, ctx->track->n_styles * sizeof(ASS_Style_Backup));
+        for (int i = ctx->num_backups; i < ctx->track->n_styles; i++) {
+            ASS_Style *s = &ctx->track->styles[i];
+            ctx->backups[i].FontSize = s->FontSize;
+            ctx->backups[i].FontName = s->FontName ? strdup(s->FontName) : NULL;
+            ctx->backups[i].Bold = s->Bold;
+            ctx->backups[i].Italic = s->Italic;
+            ctx->backups[i].PrimaryColour = s->PrimaryColour;
+            ctx->backups[i].OutlineColour = s->OutlineColour;
+            ctx->backups[i].BackColour = s->BackColour;
+            ctx->backups[i].BorderStyle = s->BorderStyle;
+            ctx->backups[i].Outline = s->Outline;
+            ctx->backups[i].MarginV = s->MarginV;
+        }
+        ctx->num_backups = ctx->track->n_styles;
+    }
+
+    // 2. Safely restore all styles to their original fansub state
+    for (int i = 0; i < ctx->track->n_styles; i++) {
+        ASS_Style *s = &ctx->track->styles[i];
+        ASS_Style_Backup *b = &ctx->backups[i];
+        s->FontSize = b->FontSize;
+        if (s->FontName) free(s->FontName);
+        s->FontName = b->FontName ? strdup(b->FontName) : NULL;
+        s->Bold = b->Bold;
+        s->Italic = b->Italic;
+        s->PrimaryColour = b->PrimaryColour;
+        s->OutlineColour = b->OutlineColour;
+        s->BackColour = b->BackColour;
+        s->BorderStyle = b->BorderStyle;
+        s->Outline = b->Outline;
+        s->MarginV = b->MarginV;
+    }
+
+    // 3. Apply the Java Overrides!
+    int force_all = ctx->is_plain_text || (u.override_mode == ASS_OVERRIDE_FORCE);
+    if (force_all || u.override_mode == ASS_OVERRIDE_SCALE) {
+        for (int i = 0; i < ctx->track->n_styles; i++) {
+            ASS_Style *style = &ctx->track->styles[i];
+
+            if (force_all) {
+                if (u.font_size > 0) {
+                    float scale = u.font_scale > 0 ? u.font_scale : 1.0f;
+                    style->FontSize = u.font_size * scale;
+                }
+                if (u.font_family && u.font_family[0] != '\0') {
+                    if (style->FontName) free(style->FontName);
+                    style->FontName = strdup(u.font_family);
+                }
+                style->Bold = u.is_bold ? -1 : 0;
+                style->Italic = u.is_italic ? -1 : 0;
+                if (u.text_color != 0) style->PrimaryColour = u.text_color;
+                if (u.outline_color != 0) style->OutlineColour = u.outline_color;
+                if (u.bg_enabled) {
+                    style->BorderStyle = 3;
+                    style->BackColour = u.bg_color;
+                } else {
+                    style->BorderStyle = 1;
+                    style->Outline = u.outline_width;
+                    style->BackColour = 0x00000000;
+                }
+                if (u.margin_bottom > 0) style->MarginV = u.margin_bottom;
+            } else if (u.override_mode == ASS_OVERRIDE_SCALE) {
+                if (u.font_scale > 0 && u.font_scale != 1.0f) {
+                    style->FontSize = style->FontSize * u.font_scale;
+                }
+            }
+        }
+    }
+
+    ctx->last_serial = u.serial;
+    if (u.font_family) free(u.font_family);
+}
 
 static void ass_msg_cb(int level, const char *fmt, va_list va, void *data) {
     if (level < 4) {
@@ -45,8 +156,12 @@ static int ssa_open(SUB_FORMAT_BACKEND *be, const SUB_FORMAT_OPEN_PARAMS *params
         ass_process_codec_private(ctx->track, (char *)params->codec_private, params->codec_private_size);
     }
 
+    // Rely entirely on the global Fontconfig XML!
     ass_set_fonts(ctx->renderer, NULL, "sans-serif", ASS_FONTPROVIDER_FONTCONFIG, NULL, 1);
 
+    // Save the global style pointers so we can sync them on the render thread
+    ctx->user_style_ptr = params->user_style;
+    ctx->is_plain_text  = params->is_plain_text_format;
     be->priv = ctx;
     return 0;
 }
@@ -69,6 +184,8 @@ static int ssa_feed(SUB_FORMAT_BACKEND *be, const uint8_t *data, int size, int64
 static SUB_FRAME *ssa_render_at(SUB_FORMAT_BACKEND *be, int64_t pts_ms) {
     SSA_BACKEND *ctx = (SSA_BACKEND *)be->priv;
     pthread_mutex_lock(&ctx->lock);
+    // --- APPLY LIVE SLIDER UPDATES ---
+    sync_styles(ctx);
 
     int change = 0;
     ASS_Image *imgs = ass_render_frame(ctx->renderer, ctx->track, pts_ms, &change);
@@ -166,6 +283,13 @@ static int ssa_flush(SUB_FORMAT_BACKEND *be) {
 static int ssa_close(SUB_FORMAT_BACKEND *be) {
     SSA_BACKEND *ctx = (SSA_BACKEND *)be->priv;
     pthread_mutex_lock(&ctx->lock);
+    // --- FREE THE BACKUPS ---
+    if (ctx->backups) {
+        for (int i = 0; i < ctx->num_backups; i++) {
+            if (ctx->backups[i].FontName) free(ctx->backups[i].FontName);
+        }
+        free(ctx->backups);
+    }
     if (ctx->track) ass_free_track(ctx->track);
     if (ctx->renderer) ass_renderer_done(ctx->renderer);
     if (ctx->library) ass_library_done(ctx->library);

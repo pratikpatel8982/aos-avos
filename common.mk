@@ -161,7 +161,7 @@ CSRC_STREAM_SINK = \
 
 CSRC_STREAM_SUB = \
 	stream_subtitle.c stream_sub_ext.c \
-	subtitle_formats.c  sub_format_ssa.c subtitle_srt.c subtitle_smi.c subtitle_sub.c subtitle_idx.c \
+	subtitle_formats.c  sub_format_ssa.c sub_format_srt.c subtitle_srt.c subtitle_smi.c subtitle_sub.c subtitle_idx.c \
 	subtitle_mpl2.c subtitle_vtt.c
 
 CSRC_AUDIO = \
