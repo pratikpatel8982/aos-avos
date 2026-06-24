@@ -117,82 +117,54 @@ DBG serprintf("subtitles_graphic_close\r\n");
 
 void subtitles_graphic_display( int time )
 {
-//DBG serprintf("subtitles_graphic_display( %d ) ", time );
-
 	if( time == -1 || ( remove_time != -1 && time > remove_time ) ) {
 		// remove all subs
-		subtitles_graphic_update( NULL );
-		subtitles_text_update( "", "" );
-
- 		remove_time = -1;
+		if (g_sub_engine && av_props && av_props->sub[av_props->subs].gfx) {
+			// Tell the new C-Engine to clear the screen
+			sub_engine_flush(g_sub_engine);
+		} else {
+			// Fallback for extreme edge cases, though Java UI should be blocked
+			subtitles_graphic_update( NULL );
+			subtitles_text_update( "", "" );
+		}
+		remove_time = -1;
 	}
 
 	if( !av_props || !sub_num || !current ) {
-//DBG serprintf("none %08X %d %08X\r\n", av_props, sub_num, current );
 		return;
 	}
-		
+
 	if( time < current->time ) {
-		// too early
-//DBG serprintf("early\r\n");
-		return;
+		return; // too early
 	} else if( time > current->time + current->duration ) {
-		// too late, drop it
 		current = NULL;
-//DBG serprintf("late\r\n");
-		return;
+		return; // too late, drop it
 	}
 
 	// show it!
-
-DBG serprintf("SUBTITLE_SHOW: %8d < %8d < %8d  ", current->time, time, current->time + current->duration);
 	if( av_props->sub[av_props->subs].gfx ) {
 		IMAGE cropped = image_crop( (IMAGE *)current, &current->window );
-DBG serprintf("%3d/%3d  %3d/%3d\r\n", current->window.x, current->window.y, current->window.width, current->window.height);
-		subtitles_graphic_update( &cropped );
+
+		// --- NATIVE OPENGL UPGRADE ---
+		// Bypass the old Java SubtitleGfxView entirely!
+		if (g_sub_engine) {
+			sub_engine_feed_bitmap(g_sub_engine,
+								   cropped.data[0],
+						  cropped.width,
+						  cropped.height,
+						  cropped.linestep[0],
+						  current->colorspace,
+						  current->window.x,  // Original X offset
+						  current->window.y,  // Original Y offset
+						  current->time,
+						  current->duration);
+		}
 	} else {
-DBG serprintf("%s\r\n", current->data[0]);
-		// currently, STREAM will export text subs as one single line in data, with \n being an escape code for a line break,
-		// so we have to split here for displaying:
-		char top[1024];
-		char *t = top;
-		
-		char *d = current->data[0];
-		char *bottom = "";
-		
-		while( *d ) {
-			if( *d == '\\' && *(d + 1) == 'n' ) {
-				// we found a line break, rest is bottom
-				bottom = d + 2;
-			
-				// replace all further line breaks with spaces
-				char *s = bottom;
-				char *b = bottom;
-				while( *s ) {
-					if( *s == '\\' && *(s + 1) == 'n' ) {
-						// we found a line break, replace
-						*b++ = ' ';
-						s += 2;
-					} else {
-						*b++ = *s++;
-					}
-				}
-				*b = '\0';
-				
-				break;
-			}
-			*t++ = *d++;
-		}
-		*t = '\0';
-
-		if( bottom ) {
-		}
-		
-		subtitles_text_update( top, bottom );
+		// Text is already handled by stream_subtitle.c Fast Lane!
+		// We do absolutely nothing here for text.
 	}
-	
-	remove_time = current->time + current->duration;
 
+	remove_time = current->time + current->duration;
 	current = NULL;
 }
 
