@@ -20,6 +20,8 @@
 #include "vobsub.h"
 #include "astdlib.h"
 #include "stream.h"
+#include "sub_engine.h" // <-- ADD THIS
+#include "sub_types.h"  // <-- ADD THIS
 
 #include <string.h>
 
@@ -44,6 +46,20 @@ DBGS serprintf("sub_dec_open_VOBSUB\r\n");
 		return 1;
 	dec->ctx = ctx;
 	dec->is_open = 1;
+
+	// --- NATIVE OPENGL UPGRADE ---
+	// Initialize the hardware GFX track for VobSub
+	extern SUB_ENGINE *g_sub_engine;
+	if (g_sub_engine) {
+		int w = 720;
+		int h = 576;
+		STREAM *stream = (STREAM *)ctx;
+		if (stream && stream->video) {
+			if (stream->video->width > 0) w = stream->video->width;
+			if (stream->video->height > 0) h = stream->video->height;
+		}
+		sub_engine_open_track(g_sub_engine, SUB_FMT_GFX, w, h, NULL, 0);
+	}
 
 	if( sub->extraData2 && sub->extraDataSize2 ) {
 DBG1		Dump( sub->extraData2, sub->extraDataSize2 );
