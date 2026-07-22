@@ -40,6 +40,9 @@ typedef struct {
     ASS_Style_Backup *backups;
     int               num_backups;
     uint32_t          last_serial;
+
+    int               orig_playres_x;
+    int               orig_playres_y;
 } SSA_BACKEND;
 
 // Synchronizes Java UI changes safely without corrupting the original ASS track!
@@ -92,6 +95,11 @@ static void sync_styles(SSA_BACKEND *ctx) {
         ctx->num_backups = new_count;
     }
 
+    if (ctx->orig_playres_x == 0 && ctx->track->PlayResX > 0) {
+        ctx->orig_playres_x = ctx->track->PlayResX;
+        ctx->orig_playres_y = ctx->track->PlayResY;
+    }
+
     // 2. Restore everything to original ASS baseline first
     if (ctx->backups) {
         for (int i = 0; i < ctx->num_backups && i < ctx->track->n_styles; i++) {
@@ -108,6 +116,11 @@ static void sync_styles(SSA_BACKEND *ctx) {
             s->Shadow = ctx->backups[i].Shadow;
             s->MarginV = ctx->backups[i].MarginV;
         }
+
+        if (ctx->orig_playres_x > 0) {
+            ctx->track->PlayResX = ctx->orig_playres_x;
+            ctx->track->PlayResY = ctx->orig_playres_y;
+        }
     }
 
     // 3. Apply the Java Overrides!
@@ -120,8 +133,8 @@ static void sync_styles(SSA_BACKEND *ctx) {
 
             if (force_all) {
                 if (u.font_size > 0) {
-                    float scale = u.font_scale > 0 ? u.font_scale : 1.0f;
-                    style->FontSize = u.font_size * scale;
+                    float font_res_scale = (ctx->orig_playres_y > 0) ? ((float)ctx->orig_playres_y / 720.0f) : 1.0f;
+                    style->FontSize = u.font_size * font_res_scale;
                 }
                 if (u.font_family && u.font_family[0] != '\0') {
                     if (style->FontName) free(style->FontName);
@@ -183,9 +196,12 @@ static void sync_styles(SSA_BACKEND *ctx) {
 
 
             } else if (u.override_mode == 2) {
-                // SCALE ONLY MODE
+                // SCALE ONLY MODE: Divide resolution by scale to enlarge everything proportionally
                 if (u.font_scale > 0 && u.font_scale != 1.0f) {
-                    style->FontSize = style->FontSize * u.font_scale;
+                    if (ctx->orig_playres_x > 0 && ctx->orig_playres_y > 0) {
+                        ctx->track->PlayResX = (int)(ctx->orig_playres_x / u.font_scale);
+                        ctx->track->PlayResY = (int)(ctx->orig_playres_y / u.font_scale);
+                    }
                 }
             }
         }
