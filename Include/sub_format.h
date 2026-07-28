@@ -33,6 +33,22 @@ typedef struct {
                                         * sub_style_snapshot() each frame if
                                         * it wants live updates              */
     int is_plain_text_format;        /* Tells the backend if this was converted from SRT/TXT */
+
+    /* --- Custom fonts folder (MX Player / mpv-android style third-party
+     * fonts dir) --- Both NULL/empty by default, meaning "feature off,
+     * behave exactly as before" (fontconfig-only resolution, hardcoded
+     * "sans-serif" fallback). Only the SSA backend currently reads these
+     * (see ssa_open() in sub_format_ssa.c); other backends may ignore them.
+     */
+    const char *fonts_dir;          /* folder to scan for .ttf/.otf/.ttc,
+                                      * registered with libass via
+                                      * ass_add_font() BEFORE fontconfig gets
+                                      * a chance to resolve anything          */
+    const char *default_font_name;  /* fallback family name libass uses when
+                                      * nothing else names a font — notably
+                                      * what plain-text (SRT/VTT) subtitles
+                                      * render with, since they carry no font
+                                      * info of their own                     */
 } SUB_FORMAT_OPEN_PARAMS;
 
 /*

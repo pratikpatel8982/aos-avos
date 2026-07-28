@@ -27,6 +27,14 @@ void sub_engine_surface_resized(SUB_ENGINE *eng, int width, int height);
 
 SUB_USER_STYLE *sub_engine_get_style(SUB_ENGINE *eng);
 
+// --- CUSTOM FONTS FOLDER (MX Player / mpv-android style third-party fonts dir) ---
+// Both are simple setters on the engine, snapshotted into SUB_FORMAT_OPEN_PARAMS the
+// next time sub_engine_open_track() runs (see sub_engine.c) -- they do not reach into
+// whatever backend is already active, so changing them mid-playback of the SAME track
+// has no effect until the next open_track() (e.g. next video, or a track switch).
+void sub_engine_set_fonts_dir(SUB_ENGINE *eng, const char *dir);          // NULL/"" disables
+void sub_engine_set_default_font_name(SUB_ENGINE *eng, const char *name); // NULL/"" falls back to "sans-serif"
+
 typedef struct {
     int64_t frames_rendered;
     int64_t frames_skipped_unchanged;

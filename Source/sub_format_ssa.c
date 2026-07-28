@@ -45,6 +45,118 @@ typedef struct {
     int               orig_playres_y;
 } SSA_BACKEND;
 
+// --- CUSTOM FONTS FOLDER (MX Player / mpv-android style) ---
+//
+// libass resolves fonts through whatever providers you register with it, tried
+// in registration order: (1) fonts added via ass_add_font() -- matched by the
+// font's own embedded family name, exactly like fonts embedded in an MKV --
+// then (2) the system fontconfig provider passed to ass_set_fonts() below.
+// So "a third font folder libass checks before fontconfig" is just: read every
+// .ttf/.otf/.ttc file in the user's folder into memory and ass_add_font() it
+// on the SAME ASS_Library our renderer uses, before the first ass_set_fonts()
+// call. No fontconfig XML/cache changes, no per-app font DB -- purely libass
+// side, so it can be redone per track open with zero system-wide side effects.
+#include <dirent.h>
+#include <stdio.h>
+#include <ctype.h>
+
+static int has_font_ext(const char *name) {
+    size_t len = strlen(name);
+    const char *exts[] = { ".ttf", ".otf", ".ttc", ".TTF", ".OTF", ".TTC" };
+    for (size_t i = 0; i < sizeof(exts) / sizeof(exts[0]); i++) {
+        size_t elen = strlen(exts[i]);
+        if (len > elen && strcmp(name + len - elen, exts[i]) == 0) return 1;
+    }
+    return 0;
+}
+
+// Best-effort filename -> family-name guess: strips a recognized font
+// extension (.ttf/.otf/.ttc, case-insensitive) if present. The "default
+// font" preference value, as stored by the Settings UI, is deliberately the
+// exact FILENAME ass_add_font() registers a custom font under (e.g.
+// "bahnschrift.ttf") -- that's the correct value for ass_add_font() itself,
+// but a font's actual internal family name (what fontselect matches
+// against) never includes a file extension, so passing the raw filename
+// straight to ass_set_fonts() as if it were already a family name means
+// libass can never resolve it (confirmed via LIBASS SUB_FONTS logging:
+// fontselect never even attempted the custom font's name at all). This is
+// NOT a substitute for reading the font's actual name table (a file like
+// "Font-Bold-Italic.ttf" whose true family name is just "Font" won't be
+// handled correctly), but it's right for the common case of a font shipped
+// as a single plain file, and costs nothing when it doesn't apply.
+// `out` must be at least `out_cap` bytes.
+static void font_filename_to_family_guess(const char *filename, char *out, size_t out_cap) {
+    size_t len = strlen(filename);
+    if (len >= out_cap) len = out_cap - 1;
+    memcpy(out, filename, len);
+    out[len] = '\0';
+
+    const char *font_exts[] = { ".ttf", ".otf", ".ttc", ".TTF", ".OTF", ".TTC" };
+    for (size_t i = 0; i < sizeof(font_exts) / sizeof(font_exts[0]); i++) {
+        size_t elen = strlen(font_exts[i]);
+        if (len > elen && strcmp(out + len - elen, font_exts[i]) == 0) {
+            out[len - elen] = '\0';
+            break;
+        }
+    }
+}
+
+// Reads every font file in `dir` into memory and registers it with libass via
+// ass_add_font(). Returns the number of fonts successfully registered.
+// Best-effort: unreadable files are skipped, not fatal -- a single corrupt or
+// permission-denied font shouldn't take out every other font in the folder or
+// the whole track open.
+static int load_fonts_dir(ASS_Library *lib, const char *dir) {
+    if (!lib || !dir || !dir[0]) return 0;
+
+    DIR *d = opendir(dir);
+    if (!d) {
+        LOGD("SUB_FONTS: could not open fonts dir '%s'", dir);
+        return 0;
+    }
+
+    int loaded = 0;
+    struct dirent *entry;
+    char path[1024];
+
+    while ((entry = readdir(d)) != NULL) {
+        if (entry->d_name[0] == '.') continue;           // skip ".", "..", hidden files
+        if (!has_font_ext(entry->d_name)) continue;
+
+        int n = snprintf(path, sizeof(path), "%s/%s", dir, entry->d_name);
+        if (n <= 0 || (size_t)n >= sizeof(path)) continue;
+
+        FILE *f = fopen(path, "rb");
+        if (!f) {
+            LOGD("SUB_FONTS: failed to open '%s'", path);
+            continue;
+        }
+
+        fseek(f, 0, SEEK_END);
+        long size = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        if (size <= 0) { fclose(f); continue; }
+
+        char *buf = malloc((size_t)size);
+        if (!buf) { fclose(f); continue; }
+
+        size_t rd = fread(buf, 1, (size_t)size, f);
+        fclose(f);
+        if (rd != (size_t)size) { free(buf); continue; }
+
+        // ass_add_font() copies the data internally, so it's safe to free our
+        // buffer immediately after the call regardless of what name we pass.
+        ass_add_font(lib, entry->d_name, buf, (int)size);
+        free(buf);
+        loaded++;
+        LOGD("SUB_FONTS: registered '%s' from custom fonts folder", entry->d_name);
+    }
+
+    closedir(d);
+    LOGD("SUB_FONTS: loaded %d font(s) from '%s'", loaded, dir);
+    return loaded;
+}
+
 // Synchronizes Java UI changes safely without corrupting the original ASS track!
 static void sync_styles(SSA_BACKEND *ctx) {
     if (!ctx->user_style_ptr || !ctx->track) return;
@@ -210,11 +322,45 @@ static void sync_styles(SSA_BACKEND *ctx) {
     free(u.font_family);
 }
 
+// libass message verbosity levels (from ass_types.h): 0=FATAL 1=ERR 2=WARN
+// 3=INFO 4=V 5=DBG2 6=... Font family resolution and fallback decisions --
+// "did libass find/use font X for family Y" -- are logged by libass itself
+// at MSGL_V (4) and MSGL_INFO-adjacent levels, NOT in the 0-3 FATAL/ERR/WARN
+// band this callback used to stop at. That's why registering fonts via
+// ass_add_font() previously had no visible confirmation from libass's own
+// side: the messages were being generated and silently dropped right here.
+//
+// We widen the ceiling to 6 rather than passing everything through, and
+// filter by content instead of leaving it fully open: at level 5-6 libass
+// also emits high-frequency per-glyph/per-frame rasterization trace that
+// would drown out everything else in logcat. Font-selection messages are
+// identifiable by content (contain "font", case-insensitively) regardless
+// of exact level, which is more robust than hardcoding an exact level
+// number that could shift between libass versions.
 static void ass_msg_cb(int level, const char *fmt, va_list va, void *data) {
     if (level < 4) {
         char buf[256];
         vsnprintf(buf, sizeof(buf), fmt, va);
         LOGD("LIBASS[%d]: %s", level, buf);
+        return;
+    }
+    if (level <= 6) {
+        char buf[256];
+        vsnprintf(buf, sizeof(buf), fmt, va);
+        // strcasestr isn't in every libc; do a manual case-insensitive
+        // substring check rather than pull in a portability shim for one
+        // log filter.
+        int mentions_font = 0;
+        for (const char *p = buf; *p; p++) {
+            if ((p[0] == 'f' || p[0] == 'F') && (p[1] == 'o' || p[1] == 'O') &&
+                (p[2] == 'n' || p[2] == 'N') && (p[3] == 't' || p[3] == 'T')) {
+                mentions_font = 1;
+                break;
+            }
+        }
+        if (mentions_font) {
+            LOGD("LIBASS[%d] SUB_FONTS: %s", level, buf);
+        }
     }
 }
 
@@ -261,8 +407,43 @@ static int ssa_open(SUB_FORMAT_BACKEND *be, const SUB_FORMAT_OPEN_PARAMS *params
         ass_process_codec_private(ctx->track, (char *)params->codec_private, params->codec_private_size);
     }
 
-    // Rely entirely on the global Fontconfig XML!
-    ass_set_fonts(ctx->renderer, NULL, "sans-serif", ASS_FONTPROVIDER_FONTCONFIG, NULL, 1);
+    // Register the user's custom fonts folder (if any) BEFORE ass_set_fonts()
+    // below, so libass's font selector already knows about these families the
+    // first time it's asked to resolve anything. Safe/no-op if the folder
+    // wasn't set or doesn't exist.
+    if (params->fonts_dir && params->fonts_dir[0]) {
+        load_fonts_dir(ctx->library, params->fonts_dir);
+    }
+
+    // Default fallback family, used whenever nothing more specific names a
+    // font (plain SRT/VTT text with no style at all, or a style whose font
+    // isn't found anywhere). If the user picked a default font from their
+    // custom folder, use it here instead of the generic "sans-serif" alias --
+    // this is what makes SRT actually render with the folder's font instead
+    // of whatever fontconfig's sans-serif happens to map to.
+    //
+    // Note this does NOT disable fontconfig: ASS_FONTPROVIDER_FONTCONFIG is
+    // still passed as the provider for names that aren't in the custom
+    // fonts folder (e.g. an embedded ASS track's own named style), so system
+    // fonts keep working exactly as before for everything else.
+    const char *default_font_input = (params->default_font_name && params->default_font_name[0])
+                                    ? params->default_font_name
+                                    : "sans-serif";
+    char default_font[256];
+    font_filename_to_family_guess(default_font_input, default_font, sizeof(default_font));
+    LOGD("SUB_FONTS: requesting default/fallback family '%s' (from stored value '%s') from libass "
+         "(custom fonts folder %s)", default_font, default_font_input,
+         (params->fonts_dir && params->fonts_dir[0]) ? "ACTIVE" : "not set");
+    ass_set_fonts(ctx->renderer, NULL, default_font, ASS_FONTPROVIDER_FONTCONFIG, NULL, 1);
+    // ass_set_fonts() itself doesn't return whether default_font actually
+    // resolved to something -- that only becomes visible the first time
+    // libass tries to RENDER text and has to pick a face, at which point it
+    // logs its own match/fallback decision through ass_msg_cb() above (now
+    // widened to surface font-related messages -- look for lines tagged
+    // "LIBASS[..] SUB_FONTS:" once rendering starts, e.g. after the first
+    // feed()+render_at() call). A missing custom font typically shows up
+    // there as libass silently substituting a system font for the
+    // requested family rather than as an explicit error.
 
     // Save the global style pointers so we can sync them on the render thread
     ctx->user_style_ptr = params->user_style;
