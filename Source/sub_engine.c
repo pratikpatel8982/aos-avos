@@ -566,8 +566,8 @@ void sub_frame_unref(SUB_FRAME *frame) {
         SUB_EVENT *ev = frame->events;
         while (ev) {
             SUB_EVENT *next = ev->next;
-            if (ev->kind == SUB_EVENT_BITMAP && ev->data.bitmap.rgba) {
-                free((void*)ev->data.bitmap.rgba);
+            if (ev->kind == SUB_EVENT_BITMAP && ev->data.bitmap.pixels) {
+                free((void*)ev->data.bitmap.pixels);
             }
             free(ev);
             ev = next;

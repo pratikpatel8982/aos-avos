@@ -76,10 +76,11 @@ static int gfx_feed_bitmap(SUB_FORMAT_BACKEND *be,
     ev->y                = y_offset;
     ev->w                = width;
     ev->h                = height;
+    ev->data.bitmap.format = SUB_BITMAP_RGBA8;
     ev->data.bitmap.stride = width * 4; // always RGBA after swizzle
 
     uint8_t *rgba = malloc(width * height * 4);
-    ev->data.bitmap.rgba = rgba;
+    ev->data.bitmap.pixels = rgba;
 
     const int is_bgra = (colorspace == AV_IMAGE_BGRA_32);
 

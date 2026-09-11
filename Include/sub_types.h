@@ -56,6 +56,27 @@ typedef enum {
     SUB_EVENT_BITMAP = 1,
 } SUB_EVENT_KIND;
 
+/* Pixel payload shape carried by a SUB_EVENT_BITMAP event.
+ *   SUB_BITMAP_RGBA8   — straight (non-premultiplied) RGBA, w*h*4 bytes,
+ *                         color already baked into the pixels. Used by
+ *                         sub_format_gfx.c (PGS/DVD — FFmpeg hands back
+ *                         real colored imagery, there's nothing to tint).
+ *   SUB_BITMAP_MASK_R8 — 8-bit coverage mask, w*h*1 bytes. `color` carries
+ *                         the RGB + alpha to tint the mask with; the
+ *                         renderer multiplies mask*color (fragment shader
+ *                         for GL, or directly in the CPU 3D bridge) instead
+ *                         of the format backend pre-expanding every pixel
+ *                         to RGBA on the CPU. Used by sub_format_ssa.c —
+ *                         libass hands back ASS_Image as an 8-bit mask plus
+ *                         one color per image, and expanding that to RGBA
+ *                         before it reaches the GPU just re-does work
+ *                         libass already did the hard part of.
+ */
+typedef enum {
+    SUB_BITMAP_RGBA8   = 0,
+    SUB_BITMAP_MASK_R8 = 1,
+} SUB_BITMAP_FORMAT;
+
 typedef struct SUB_EVENT {
     SUB_EVENT_KIND kind;
 
@@ -70,10 +91,23 @@ typedef struct SUB_EVENT {
         } text;
 
         struct {
-            const uint8_t *rgba;     /* tightly packed, w*h*4 bytes        */
-            int             stride;   /* bytes per row (may be > w*4)      */
-            /* Ownership: renderer uploads synchronously and does not
-             * retain this pointer past the call to sub_engine_submit_frame(). */
+            SUB_BITMAP_FORMAT format;  /* which payload shape this event carries */
+            const uint8_t    *pixels;  /* RGBA8: tightly packed w*h*4 bytes.
+                                         * MASK_R8: tightly packed w*h*1 coverage bytes. */
+            int               stride;  /* bytes per row (may be > w*bpp)    */
+            SUB_COLOR         color;   /* MASK_R8 only — RGB + alpha to tint
+                                         * the mask with. Unused/zeroed for
+                                         * RGBA8, where color already lives
+                                         * in the pixels themselves.        */
+            /* Ownership: the event owns this buffer and frees it in
+             * sub_frame_unref() (sub_engine.c). The renderer/CPU bridge may
+             * hold a ref on the whole SUB_FRAME (sub_frame_ref()) for as
+             * long as they're actively reading these pixels, but never
+             * retain the raw pointer beyond that. (Corrected from the prior
+             * comment here, which referenced a sub_engine_submit_frame()
+             * that doesn't exist in this codebase — the real lifetime is
+             * the refcount/pin scheme visible in sub_render_gl.c and
+             * sub_engine.c.) */
         } bitmap;
     } data;
 

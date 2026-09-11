@@ -756,26 +756,25 @@ static SUB_FRAME *ssa_render_at(SUB_FORMAT_BACKEND *be, int64_t pts_ms) {
         ev->w = img->w;
         ev->h = img->h;
 
-        uint8_t *rgba = malloc(img->w * img->h * 4);
+        // libass already gives us an 8-bit coverage mask -- copy it row by
+        // row (img->stride may be padded wider than img->w) instead of
+        // expanding every pixel out to RGBA on the CPU. Color (r,g,b,a
+        // computed above from img->color) travels alongside the mask and
+        // gets applied by the renderer/CPU-bridge, not baked in here.
+        uint8_t *mask = malloc((size_t)img->w * img->h);
         const uint8_t *src = img->bitmap;
-        uint8_t *dst = rgba;
+        uint8_t *dst = mask;
 
         for (int y = 0; y < img->h; y++) {
-            for (int x = 0; x < img->w; x++) {
-                uint8_t mask = src[x];
-                uint8_t final_a = (mask * a) / 255;
-
-                dst[0] = r;
-                dst[1] = g;
-                dst[2] = b;
-                dst[3] = final_a;
-                dst += 4;
-            }
+            memcpy(dst, src, img->w);
+            dst += img->w;
             src += img->stride;
         }
 
-        ev->data.bitmap.rgba = rgba;
-        ev->data.bitmap.stride = img->w * 4;
+        ev->data.bitmap.format = SUB_BITMAP_MASK_R8;
+        ev->data.bitmap.pixels = mask;
+        ev->data.bitmap.stride = img->w; // tightly packed
+        ev->data.bitmap.color  = (SUB_COLOR){ r, g, b, a };
 
         if (!frame->events) frame->events = ev;
         else last_ev->next = ev;

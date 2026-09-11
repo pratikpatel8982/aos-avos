@@ -1,8 +1,20 @@
 #include "sub_render_gl.h"
 #include "sub_engine.h"
 #include <EGL/egl.h>
-#include <GLES2/gl2.h>
+#include <EGL/eglext.h>
+#include <GLES3/gl3.h>
 #include <pthread.h>
+
+// Some NDK versions only define this in eglext.h under the *_KHR suffix
+// rather than the EGL-1.5-core name; cover both so the build doesn't
+// depend on exactly which headers ship in a given NDK release.
+#ifndef EGL_OPENGL_ES3_BIT
+#ifdef EGL_OPENGL_ES3_BIT_KHR
+#define EGL_OPENGL_ES3_BIT EGL_OPENGL_ES3_BIT_KHR
+#else
+#define EGL_OPENGL_ES3_BIT 0x0040
+#endif
+#endif
 #include <unistd.h>
 #include <stdlib.h>
 #include "debug.h"
@@ -23,10 +35,12 @@ struct SUB_RENDERER {
     uint64_t         applied_generation; // highest wakeup_generation this thread has finished a poll+store pass for
     uint64_t         frame_generation;   // bumped only when current_frame is swapped for genuinely new content -- see sub_render_gl_get_frame_generation()
     pthread_cond_t   frame_cond;         // broadcast whenever applied_generation advances
-    GLuint           gl_program;
+    GLuint           gl_program_rgba; // straight textured quad -- GFX/PGS events (SUB_BITMAP_RGBA8)
+    GLuint           gl_program_mask; // mask*color tint -- ASS events (SUB_BITMAP_MASK_R8)
+    GLint            u_mask_color;    // "uColor" uniform location in gl_program_mask
     GLuint           gl_texture;
-    GLint            attrib_pos;
-    GLint            attrib_tex;
+    GLint            attrib_pos;      // shared across both programs -- see create_program()'s
+    GLint            attrib_tex;      // explicit glBindAttribLocation(0/1) below
     void            *engine;
 };
 
@@ -51,6 +65,11 @@ static GLuint create_program(const char *vertex_src, const char *fragment_src) {
     GLuint program = glCreateProgram();
     glAttachShader(program, vs);
     glAttachShader(program, fs);
+    // Pin both programs to the same attribute slots so a single pair of
+    // attrib_pos/attrib_tex locations (queried once, below) is valid no
+    // matter which program is currently bound when we draw.
+    glBindAttribLocation(program, 0, "aPosition");
+    glBindAttribLocation(program, 1, "aTexCoord");
     glLinkProgram(program);
 
     GLint status = 0;
@@ -72,7 +91,7 @@ static void* egl_render_thread(void* arg) {
     eglInitialize(display, NULL, NULL);
 
     const EGLint attribs[] = {
-        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
         EGL_BLUE_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_RED_SIZE, 8, EGL_ALPHA_SIZE, 8,
         EGL_NONE
     };
@@ -80,7 +99,7 @@ static void* egl_render_thread(void* arg) {
     EGLint numConfigs;
     eglChooseConfig(display, attribs, &config, 1, &numConfigs);
 
-    const EGLint context_attribs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
+    const EGLint context_attribs[] = { EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE };
     EGLContext context = eglCreateContext(display, config, EGL_NO_CONTEXT, context_attribs);
 
     EGLSurface surface = EGL_NO_SURFACE;
@@ -152,27 +171,51 @@ static void* egl_render_thread(void* arg) {
                         DBG serprintf("SUB_RENDER_GL: adopted real EGL surface size %d x %d on window attach\n", real_w, real_h);
                     }
 
-                    if (r->gl_program == 0) {
+                    if (r->gl_program_rgba == 0) {
                         const char* vs_src =
-                        "attribute vec4 aPosition;\n"
-                        "attribute vec2 aTexCoord;\n"
-                        "varying vec2 vTexCoord;\n"
+                        "#version 300 es\n"
+                        "in vec4 aPosition;\n"
+                        "in vec2 aTexCoord;\n"
+                        "out vec2 vTexCoord;\n"
                         "void main() {\n"
                         "  gl_Position = aPosition;\n"
                         "  vTexCoord = aTexCoord;\n"
                         "}\n";
 
-        const char* fs_src =
+        // GFX/PGS path: texture already holds real RGBA color, just sample it.
+        const char* fs_src_rgba =
+        "#version 300 es\n"
         "precision mediump float;\n"
-        "varying vec2 vTexCoord;\n"
+        "in vec2 vTexCoord;\n"
         "uniform sampler2D uTexture;\n"
+        "out vec4 fragColor;\n"
         "void main() {\n"
-        "  gl_FragColor = texture2D(uTexture, vTexCoord);\n"
+        "  fragColor = texture(uTexture, vTexCoord);\n"
         "}\n";
 
-        r->gl_program = create_program(vs_src, fs_src);
-        r->attrib_pos = glGetAttribLocation(r->gl_program, "aPosition");
-        r->attrib_tex = glGetAttribLocation(r->gl_program, "aTexCoord");
+        // ASS path: texture holds an 8-bit coverage mask in the red channel;
+        // tint it with this image's color instead of the CPU pre-expanding
+        // every pixel to RGBA before it ever reaches the GPU.
+        const char* fs_src_mask =
+        "#version 300 es\n"
+        "precision mediump float;\n"
+        "in vec2 vTexCoord;\n"
+        "uniform sampler2D uTexture;\n"
+        "uniform vec4 uColor;\n" // rgb + alpha, all already normalized 0..1
+        "out vec4 fragColor;\n"
+        "void main() {\n"
+        "  float coverage = texture(uTexture, vTexCoord).r;\n"
+        "  fragColor = vec4(uColor.rgb, coverage * uColor.a);\n"
+        "}\n";
+
+        r->gl_program_rgba = create_program(vs_src, fs_src_rgba);
+        r->gl_program_mask = create_program(vs_src, fs_src_mask);
+        // Both programs bind aPosition/aTexCoord to locations 0/1 (see
+        // create_program()), so querying either program gives locations
+        // valid for both -- no need to look these up per-program.
+        r->attrib_pos  = glGetAttribLocation(r->gl_program_rgba, "aPosition");
+        r->attrib_tex  = glGetAttribLocation(r->gl_program_rgba, "aTexCoord");
+        r->u_mask_color = glGetUniformLocation(r->gl_program_mask, "uColor");
 
         glGenTextures(1, &r->gl_texture);
         glBindTexture(GL_TEXTURE_2D, r->gl_texture);
@@ -180,6 +223,10 @@ static void* egl_render_thread(void* arg) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        // Set once here rather than every event in the draw loop below --
+        // it never needs to be anything else for these tightly-packed
+        // uploads (see the loop for why per-event was wasted work).
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
                     }
                 }
             }
@@ -268,10 +315,9 @@ static void* egl_render_thread(void* arg) {
         glClear(GL_COLOR_BUFFER_BIT);
 
         if (frame_to_draw && frame_to_draw->events
-            && r->gl_program != 0
+            && r->gl_program_rgba != 0 && r->gl_program_mask != 0
             && attrib_pos != -1 && attrib_tex != -1) {
 
-            glUseProgram(r->gl_program);
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
@@ -279,11 +325,28 @@ static void* egl_render_thread(void* arg) {
         while (ev) {
             if (ev->kind == SUB_EVENT_BITMAP) {
                 glBindTexture(GL_TEXTURE_2D, r->gl_texture);
-                glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
-                             ev->w, ev->h, 0,
-                             GL_RGBA, GL_UNSIGNED_BYTE,
-                             ev->data.bitmap.rgba);
+
+                // ASS events carry an 8-bit coverage mask (tinted in the
+                // shader via uColor); GFX/PGS events already are full RGBA.
+                // GL_UNPACK_ALIGNMENT is set once at texture creation above
+                // -- both formats here are tightly packed, so it never
+                // needs to change per event.
+                if (ev->data.bitmap.format == SUB_BITMAP_MASK_R8) {
+                    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8,
+                                 ev->w, ev->h, 0,
+                                 GL_RED, GL_UNSIGNED_BYTE,
+                                 ev->data.bitmap.pixels);
+                    glUseProgram(r->gl_program_mask);
+                    SUB_COLOR c = ev->data.bitmap.color;
+                    glUniform4f(r->u_mask_color,
+                                c.r / 255.0f, c.g / 255.0f, c.b / 255.0f, c.a / 255.0f);
+                } else {
+                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
+                                 ev->w, ev->h, 0,
+                                 GL_RGBA, GL_UNSIGNED_BYTE,
+                                 ev->data.bitmap.pixels);
+                    glUseProgram(r->gl_program_rgba);
+                }
 
                 float x1 = (ev->x / (float)frame_to_draw->video_w) * 2.0f - 1.0f;
                 float y1 = 1.0f - (ev->y / (float)frame_to_draw->video_h) * 2.0f;
@@ -329,8 +392,9 @@ static void* egl_render_thread(void* arg) {
     if (current_window) {
         ANativeWindow_release(current_window);   // NEW
     }
-    if (r->gl_program != 0) {
-        glDeleteProgram(r->gl_program);
+    if (r->gl_program_rgba != 0) {
+        glDeleteProgram(r->gl_program_rgba);
+        glDeleteProgram(r->gl_program_mask);
         glDeleteTextures(1, &r->gl_texture);
     }
     eglDestroyContext(display, context);
@@ -483,6 +547,21 @@ void sub_render_gl_wait_for_generation(SUB_RENDERER *r, uint64_t target_generati
     pthread_mutex_unlock(&r->lock);
 }
 
+// Shared "src-over" blend, used by both format branches in
+// sub_render_gl_fill_bitmap() below so the math only lives in one place.
+static inline void cpu_blend_over(uint8_t *dst_px, uint8_t r, uint8_t g, uint8_t b, uint8_t sa) {
+    if (sa == 255 || dst_px[3] == 0) {
+        dst_px[0] = r; dst_px[1] = g; dst_px[2] = b; dst_px[3] = sa;
+    } else {
+        uint8_t dr = dst_px[0], dg = dst_px[1], db = dst_px[2], da = dst_px[3];
+        int inv_sa = 255 - sa;
+        dst_px[0] = (r * sa + dr * inv_sa) >> 8;
+        dst_px[1] = (g * sa + dg * inv_sa) >> 8;
+        dst_px[2] = (b * sa + db * inv_sa) >> 8;
+        dst_px[3] = sa + ((da * inv_sa) >> 8);
+    }
+}
+
 // --- HYBRID 3D BRIDGE FAST CPU BLENDER ---
 int sub_render_gl_fill_bitmap(SUB_RENDERER *r, void* pixels, int dst_w, int dst_h, int dst_stride, uint64_t *out_generation) {
     if (!r) return 0;
@@ -501,41 +580,64 @@ int sub_render_gl_fill_bitmap(SUB_RENDERER *r, void* pixels, int dst_w, int dst_
         SUB_EVENT *ev = frame->events;
 
         while (ev) {
-            if (ev->kind == SUB_EVENT_BITMAP && ev->data.bitmap.rgba) {
-                const uint8_t *src_rgba = ev->data.bitmap.rgba;
-
+            if (ev->kind == SUB_EVENT_BITMAP && ev->data.bitmap.pixels) {
                 int src_w = ev->w;
                 int src_h = ev->h;
                 int src_x = ev->x;
                 int src_y = ev->y;
 
-                // 1:1 Pixel copy. No scaling, no rounding errors, no clipping!
-                for (int y = 0; y < src_h; y++) {
-                    int dy = src_y + y;
-                    if (dy < 0 || dy >= dst_h) continue;
+                if (ev->data.bitmap.format == SUB_BITMAP_MASK_R8) {
+                    // ASS: 8-bit coverage mask + one color for the whole image.
+                    // Tint here instead of assuming the buffer is RGBA -- this
+                    // is the CPU-side counterpart of the GL fragment shader's
+                    // "coverage * uColor" in the draw loop above.
+                    const uint8_t *src_mask = ev->data.bitmap.pixels;
+                    SUB_COLOR c = ev->data.bitmap.color;
 
-                    uint8_t *dst_row = (uint8_t *)pixels + (dy * dst_stride);
-                    const uint8_t *src_row = src_rgba + (y * ev->data.bitmap.stride);
+                    if (c.a != 0) {
+                        for (int y = 0; y < src_h; y++) {
+                            int dy = src_y + y;
+                            if (dy < 0 || dy >= dst_h) continue;
 
-                    for (int x = 0; x < src_w; x++) {
-                        int dx = src_x + x;
-                        if (dx < 0 || dx >= dst_w) continue;
+                            uint8_t *dst_row = (uint8_t *)pixels + (dy * dst_stride);
+                            const uint8_t *src_row = src_mask + (y * ev->data.bitmap.stride);
 
-                        uint8_t *dst_px = dst_row + (dx * 4);
-                        const uint8_t *src_px = src_row + (x * 4);
+                            for (int x = 0; x < src_w; x++) {
+                                int dx = src_x + x;
+                                if (dx < 0 || dx >= dst_w) continue;
 
-                        uint8_t sa = src_px[3];
-                        if (sa == 0) continue;
+                                uint8_t mask = src_row[x];
+                                if (mask == 0) continue;
+                                uint8_t sa = (uint8_t)((mask * c.a) / 255);
+                                if (sa == 0) continue;
 
-                        if (sa == 255 || dst_px[3] == 0) {
-                            dst_px[0] = src_px[0]; dst_px[1] = src_px[1]; dst_px[2] = src_px[2]; dst_px[3] = sa;
-                        } else {
-                            uint8_t dr = dst_px[0], dg = dst_px[1], db = dst_px[2], da = dst_px[3];
-                            int inv_sa = 255 - sa;
-                            dst_px[0] = (src_px[0] * sa + dr * inv_sa) >> 8;
-                            dst_px[1] = (src_px[1] * sa + dg * inv_sa) >> 8;
-                            dst_px[2] = (src_px[2] * sa + db * inv_sa) >> 8;
-                            dst_px[3] = sa + ((da * inv_sa) >> 8);
+                                cpu_blend_over(dst_row + (dx * 4), c.r, c.g, c.b, sa);
+                            }
+                        }
+                    }
+                } else {
+                    // GFX/PGS: already real RGBA, 1:1 pixel copy. No scaling,
+                    // no rounding errors, no clipping!
+                    const uint8_t *src_rgba = ev->data.bitmap.pixels;
+
+                    for (int y = 0; y < src_h; y++) {
+                        int dy = src_y + y;
+                        if (dy < 0 || dy >= dst_h) continue;
+
+                        uint8_t *dst_row = (uint8_t *)pixels + (dy * dst_stride);
+                        const uint8_t *src_row = src_rgba + (y * ev->data.bitmap.stride);
+
+                        for (int x = 0; x < src_w; x++) {
+                            int dx = src_x + x;
+                            if (dx < 0 || dx >= dst_w) continue;
+
+                            uint8_t *dst_px = dst_row + (dx * 4);
+                            const uint8_t *src_px = src_row + (x * 4);
+
+                            uint8_t sa = src_px[3];
+                            if (sa == 0) continue;
+
+                            cpu_blend_over(dst_px, src_px[0], src_px[1], src_px[2], sa);
                         }
                     }
                 }
