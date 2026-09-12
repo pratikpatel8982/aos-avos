@@ -17,10 +17,23 @@
 #endif
 #include <unistd.h>
 #include <stdlib.h>
+#include <string.h>
 #include "debug.h"
 #include <time.h>
 
 #define DBG if(Debug[DBG_SUB])
+
+// --- ASS mask atlas + batched draw (Phase 2) ---
+// R8 atlas texture: every ES3 device guarantees GL_MAX_TEXTURE_SIZE >= 2048,
+// so this size never needs a capability query. 2048x2048x1 byte = 4MB CPU-side
+// scratch, comfortably larger than a typical multi-layer ASS frame.
+#define SUB_ATLAS_DIM             2048
+// Safety cap, not an expected ceiling -- a frame with more mask images than
+// this just flushes and starts a second batch (see draw_ass_batch()) rather
+// than failing. Real ASS frames are nowhere near this even for karaoke.
+#define SUB_BATCH_MAX_QUADS       256
+#define SUB_BATCH_VERTS_PER_QUAD  6   // two triangles, no strip/primitive-restart bookkeeping
+#define SUB_BATCH_FLOATS_PER_VERT 8   // x, y, u, v, r, g, b, a
 
 struct SUB_RENDERER {
     ANativeWindow  *window;
@@ -35,12 +48,18 @@ struct SUB_RENDERER {
     uint64_t         applied_generation; // highest wakeup_generation this thread has finished a poll+store pass for
     uint64_t         frame_generation;   // bumped only when current_frame is swapped for genuinely new content -- see sub_render_gl_get_frame_generation()
     pthread_cond_t   frame_cond;         // broadcast whenever applied_generation advances
-    GLuint           gl_program_rgba; // straight textured quad -- GFX/PGS events (SUB_BITMAP_RGBA8)
-    GLuint           gl_program_mask; // mask*color tint -- ASS events (SUB_BITMAP_MASK_R8)
-    GLint            u_mask_color;    // "uColor" uniform location in gl_program_mask
-    GLuint           gl_texture;
-    GLint            attrib_pos;      // shared across both programs -- see create_program()'s
-    GLint            attrib_tex;      // explicit glBindAttribLocation(0/1) below
+    GLuint           gl_program_rgba;  // straight textured quad -- GFX/PGS events (SUB_BITMAP_RGBA8)
+    GLuint           gl_program_mask;  // single-image mask*color tint -- fallback only, see draw_mask_immediate()
+    GLint            u_mask_color;     // "uColor" uniform location in gl_program_mask
+    GLuint           gl_program_batch; // batched mask*color tint -- the common-case ASS path, color rides per-vertex
+    GLuint           gl_texture;       // shared by gl_program_rgba draws and the gl_program_mask fallback
+    GLuint           gl_atlas_texture; // persistent R8 atlas for gl_program_batch
+    GLuint           gl_vao;           // persistent vertex layout for the batched draw (pos/uv/color)
+    GLuint           gl_vbo;           // persistent vertex buffer backing that VAO
+    uint8_t         *atlas_cpu;        // SUB_ATLAS_DIM*SUB_ATLAS_DIM scratch, packed fresh each redraw, reused across redraws
+    GLfloat         *batch_vertices;   // SUB_BATCH_MAX_QUADS*SUB_BATCH_VERTS_PER_QUAD*SUB_BATCH_FLOATS_PER_VERT scratch
+    GLint            attrib_pos;       // shared across gl_program_rgba/gl_program_mask -- explicit
+    GLint            attrib_tex;       // glBindAttribLocation(0/1) in create_program() guarantees this
     void            *engine;
 };
 
@@ -65,11 +84,15 @@ static GLuint create_program(const char *vertex_src, const char *fragment_src) {
     GLuint program = glCreateProgram();
     glAttachShader(program, vs);
     glAttachShader(program, fs);
-    // Pin both programs to the same attribute slots so a single pair of
-    // attrib_pos/attrib_tex locations (queried once, below) is valid no
-    // matter which program is currently bound when we draw.
+    // Pin all three programs to the same attribute slots so one set of
+    // locations (queried once, below) is valid no matter which program is
+    // currently bound when we draw. gl_program_rgba/gl_program_mask don't
+    // declare "aColor" -- binding it anyway is a documented no-op per the
+    // GL spec (a binding only takes effect for attributes the shader
+    // actually uses), so this is safe to call unconditionally.
     glBindAttribLocation(program, 0, "aPosition");
     glBindAttribLocation(program, 1, "aTexCoord");
+    glBindAttribLocation(program, 2, "aColor");
     glLinkProgram(program);
 
     GLint status = 0;
@@ -82,6 +105,151 @@ static GLuint create_program(const char *vertex_src, const char *fragment_src) {
     glDeleteShader(vs);
     glDeleteShader(fs);
     return program;
+}
+
+// --- ASS mask fallback: single oversized image ---
+// Only reached when one mask image doesn't fit in the atlas at all (w or h
+// > SUB_ATLAS_DIM -- effectively never for real subtitle content, since
+// images are bounded by video_w/video_h and ES3's guaranteed minimum
+// texture size is 2048). Draws it immediately with its own texture upload,
+// same as every mask image did before batching existed. Exists so an
+// oversized image degrades to "one extra draw call" instead of being
+// silently dropped.
+static void draw_mask_immediate(SUB_RENDERER *r, const SUB_FRAME *frame_to_draw, SUB_EVENT *ev) {
+    glBindVertexArray(0); // don't fight the batch VAO's bound attribute state
+    glBindTexture(GL_TEXTURE_2D, r->gl_texture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, ev->w, ev->h, 0,
+                 GL_RED, GL_UNSIGNED_BYTE, ev->data.bitmap.pixels);
+    glUseProgram(r->gl_program_mask);
+    SUB_COLOR c = ev->data.bitmap.color;
+    glUniform4f(r->u_mask_color, c.r / 255.0f, c.g / 255.0f, c.b / 255.0f, c.a / 255.0f);
+
+    float x1 = (ev->x / (float)frame_to_draw->video_w) * 2.0f - 1.0f;
+    float y1 = 1.0f - (ev->y / (float)frame_to_draw->video_h) * 2.0f;
+    float x2 = ((ev->x + ev->w) / (float)frame_to_draw->video_w) * 2.0f - 1.0f;
+    float y2 = 1.0f - ((ev->y + ev->h) / (float)frame_to_draw->video_h) * 2.0f;
+
+    GLfloat vertices[] = {
+        x1, y2, 0.0f, 0.0f, 1.0f,
+        x2, y2, 0.0f, 1.0f, 1.0f,
+        x1, y1, 0.0f, 0.0f, 0.0f,
+        x2, y1, 0.0f, 1.0f, 0.0f
+    };
+    glVertexAttribPointer(r->attrib_pos, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(GLfloat), vertices);
+    glVertexAttribPointer(r->attrib_tex, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(GLfloat), vertices + 3);
+    glEnableVertexAttribArray(r->attrib_pos);
+    glEnableVertexAttribArray(r->attrib_tex);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glDisableVertexAttribArray(r->attrib_pos);
+    glDisableVertexAttribArray(r->attrib_tex);
+}
+
+// Uploads whatever's been packed into atlas_cpu so far and draws all of it
+// in one call. The only glTexImage2D + glDrawArrays pair for however many
+// mask images fit in this batch, instead of one pair per image.
+static void flush_ass_batch(SUB_RENDERER *r, int quad_count) {
+    if (quad_count <= 0) return;
+
+    glBindTexture(GL_TEXTURE_2D, r->gl_atlas_texture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, SUB_ATLAS_DIM, SUB_ATLAS_DIM, 0,
+                 GL_RED, GL_UNSIGNED_BYTE, r->atlas_cpu);
+
+    glUseProgram(r->gl_program_batch);
+    glBindVertexArray(r->gl_vao);
+    glBindBuffer(GL_ARRAY_BUFFER, r->gl_vbo);
+    glBufferSubData(GL_ARRAY_BUFFER, 0,
+                     (GLsizeiptr)quad_count * SUB_BATCH_VERTS_PER_QUAD * SUB_BATCH_FLOATS_PER_VERT * sizeof(GLfloat),
+                     r->batch_vertices);
+
+    glDrawArrays(GL_TRIANGLES, 0, quad_count * SUB_BATCH_VERTS_PER_QUAD);
+
+    glBindVertexArray(0);
+}
+
+// Packs every SUB_BITMAP_MASK_R8 event in the frame's event list into the
+// atlas with a simple shelf packer, building one vertex per corner (with
+// this image's own color baked into those vertices -- see
+// SUB_BATCH_FLOATS_PER_VERT) as it goes, and flushes in as few draw calls
+// as the atlas/batch size allows. RGBA8 (GFX) events are left untouched for
+// the caller's existing immediate-draw loop.
+static void draw_ass_batch(SUB_RENDERER *r, const SUB_FRAME *frame_to_draw) {
+    if (!r->atlas_cpu || !r->batch_vertices) return; // allocation failed at init -- nothing to batch with
+
+    int cursor_x = 0, cursor_y = 0, shelf_h = 0;
+    int quad_count = 0;
+    GLfloat *vtx = r->batch_vertices;
+
+    for (SUB_EVENT *ev = frame_to_draw->events; ev; ev = ev->next) {
+        if (ev->kind != SUB_EVENT_BITMAP || ev->data.bitmap.format != SUB_BITMAP_MASK_R8)
+            continue;
+
+        int iw = ev->w, ih = ev->h;
+        if (iw <= 0 || ih <= 0) continue;
+
+        if (iw > SUB_ATLAS_DIM || ih > SUB_ATLAS_DIM) {
+            // libass's image list is already in back-to-front paint order
+            // (outline under fill, etc). Flush whatever's queued first so
+            // this image can't jump ahead of quads that preceded it in the
+            // list -- otherwise drawing it immediately here would reorder
+            // it relative to anything still sitting in the batch buffer.
+            flush_ass_batch(r, quad_count);
+            cursor_x = 0; cursor_y = 0; shelf_h = 0; quad_count = 0;
+            vtx = r->batch_vertices;
+
+            draw_mask_immediate(r, frame_to_draw, ev);
+            continue;
+        }
+
+        if (cursor_x + iw > SUB_ATLAS_DIM) {
+            cursor_x = 0;
+            cursor_y += shelf_h;
+            shelf_h = 0;
+        }
+        if (cursor_y + ih > SUB_ATLAS_DIM || quad_count >= SUB_BATCH_MAX_QUADS) {
+            // Out of room (or hit the per-draw cap) -- flush what we have
+            // and start a fresh atlas/batch for the remaining images. The
+            // image that triggered this is guaranteed to fit an empty
+            // atlas (already checked against SUB_ATLAS_DIM above).
+            flush_ass_batch(r, quad_count);
+            cursor_x = 0; cursor_y = 0; shelf_h = 0; quad_count = 0;
+            vtx = r->batch_vertices;
+        }
+
+        const uint8_t *src = ev->data.bitmap.pixels;
+        for (int y = 0; y < ih; y++) {
+            memcpy(r->atlas_cpu + (size_t)(cursor_y + y) * SUB_ATLAS_DIM + cursor_x,
+                   src + (size_t)y * ev->data.bitmap.stride, iw);
+        }
+
+        float x1 = (ev->x / (float)frame_to_draw->video_w) * 2.0f - 1.0f;
+        float y1 = 1.0f - (ev->y / (float)frame_to_draw->video_h) * 2.0f;
+        float x2 = ((ev->x + iw) / (float)frame_to_draw->video_w) * 2.0f - 1.0f;
+        float y2 = 1.0f - ((ev->y + ih) / (float)frame_to_draw->video_h) * 2.0f;
+
+        float u1 = cursor_x / (float)SUB_ATLAS_DIM;
+        float v1 = (cursor_y + ih) / (float)SUB_ATLAS_DIM;
+        float u2 = (cursor_x + iw) / (float)SUB_ATLAS_DIM;
+        float v2 = cursor_y / (float)SUB_ATLAS_DIM;
+
+        SUB_COLOR c = ev->data.bitmap.color;
+        float cr = c.r / 255.0f, cg = c.g / 255.0f, cb = c.b / 255.0f, ca = c.a / 255.0f;
+
+        // Two triangles per quad: (x1,y2)-(x2,y2)-(x1,y1) and (x2,y2)-(x2,y1)-(x1,y1)
+        float quad[SUB_BATCH_VERTS_PER_QUAD][4] = {
+            { x1, y2, u1, v1 }, { x2, y2, u2, v1 }, { x1, y1, u1, v2 },
+            { x2, y2, u2, v1 }, { x2, y1, u2, v2 }, { x1, y1, u1, v2 },
+        };
+        for (int i = 0; i < SUB_BATCH_VERTS_PER_QUAD; i++) {
+            *vtx++ = quad[i][0]; *vtx++ = quad[i][1]; *vtx++ = quad[i][2]; *vtx++ = quad[i][3];
+            *vtx++ = cr; *vtx++ = cg; *vtx++ = cb; *vtx++ = ca;
+        }
+
+        cursor_x += iw;
+        shelf_h = shelf_h > ih ? shelf_h : ih;
+        quad_count++;
+    }
+
+    flush_ass_batch(r, quad_count);
 }
 
 static void* egl_render_thread(void* arg) {
@@ -217,6 +385,35 @@ static void* egl_render_thread(void* arg) {
         r->attrib_tex  = glGetAttribLocation(r->gl_program_rgba, "aTexCoord");
         r->u_mask_color = glGetUniformLocation(r->gl_program_mask, "uColor");
 
+        // Batched ASS path: color rides per-vertex (aColor) instead of a
+        // uniform, so one draw call can mix images that each have their
+        // own color (e.g. fill vs. outline vs. shadow layers) -- a single
+        // "uColor" uniform couldn't do that across a batch.
+        const char* vs_src_batch =
+        "#version 300 es\n"
+        "in vec2 aPosition;\n"
+        "in vec2 aTexCoord;\n"
+        "in vec4 aColor;\n"
+        "out vec2 vTexCoord;\n"
+        "out vec4 vColor;\n"
+        "void main() {\n"
+        "  gl_Position = vec4(aPosition, 0.0, 1.0);\n"
+        "  vTexCoord = aTexCoord;\n"
+        "  vColor = aColor;\n"
+        "}\n";
+        const char* fs_src_batch =
+        "#version 300 es\n"
+        "precision mediump float;\n"
+        "in vec2 vTexCoord;\n"
+        "in vec4 vColor;\n"
+        "uniform sampler2D uTexture;\n"
+        "out vec4 fragColor;\n"
+        "void main() {\n"
+        "  float coverage = texture(uTexture, vTexCoord).r;\n"
+        "  fragColor = vec4(vColor.rgb, coverage * vColor.a);\n"
+        "}\n";
+        r->gl_program_batch = create_program(vs_src_batch, fs_src_batch);
+
         glGenTextures(1, &r->gl_texture);
         glBindTexture(GL_TEXTURE_2D, r->gl_texture);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -227,6 +424,38 @@ static void* egl_render_thread(void* arg) {
         // it never needs to be anything else for these tightly-packed
         // uploads (see the loop for why per-event was wasted work).
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
+        // Persistent R8 atlas texture for the batched ASS path.
+        glGenTextures(1, &r->gl_atlas_texture);
+        glBindTexture(GL_TEXTURE_2D, r->gl_atlas_texture);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+        // Persistent VBO + VAO: vertex layout (pos.xy, uv.xy, color.rgba)
+        // is configured exactly once here, not re-enabled/disabled on
+        // every draw the way the immediate paths above still do.
+        glGenBuffers(1, &r->gl_vbo);
+        glBindBuffer(GL_ARRAY_BUFFER, r->gl_vbo);
+        glBufferData(GL_ARRAY_BUFFER,
+                     (GLsizeiptr)SUB_BATCH_MAX_QUADS * SUB_BATCH_VERTS_PER_QUAD * SUB_BATCH_FLOATS_PER_VERT * sizeof(GLfloat),
+                     NULL, GL_DYNAMIC_DRAW);
+
+        glGenVertexArrays(1, &r->gl_vao);
+        glBindVertexArray(r->gl_vao);
+        glBindBuffer(GL_ARRAY_BUFFER, r->gl_vbo);
+        GLsizei batch_stride = SUB_BATCH_FLOATS_PER_VERT * sizeof(GLfloat);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, batch_stride, (const void*)0);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, batch_stride, (const void*)(2 * sizeof(GLfloat)));
+        glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, batch_stride, (const void*)(4 * sizeof(GLfloat)));
+        glEnableVertexAttribArray(0);
+        glEnableVertexAttribArray(1);
+        glEnableVertexAttribArray(2);
+        glBindVertexArray(0);
+
+        r->atlas_cpu = calloc(1, (size_t)SUB_ATLAS_DIM * SUB_ATLAS_DIM);
+        r->batch_vertices = malloc((size_t)SUB_BATCH_MAX_QUADS * SUB_BATCH_VERTS_PER_QUAD * SUB_BATCH_FLOATS_PER_VERT * sizeof(GLfloat));
                     }
                 }
             }
@@ -315,38 +544,28 @@ static void* egl_render_thread(void* arg) {
         glClear(GL_COLOR_BUFFER_BIT);
 
         if (frame_to_draw && frame_to_draw->events
-            && r->gl_program_rgba != 0 && r->gl_program_mask != 0
+            && r->gl_program_rgba != 0 && r->gl_program_mask != 0 && r->gl_program_batch != 0
             && attrib_pos != -1 && attrib_tex != -1) {
 
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
+        // ASS mask events: packed into the atlas and drawn in as few calls
+        // as possible (see draw_ass_batch()). GFX/PGS events are left for
+        // the loop below -- a frame never carries more than one of those
+        // (see sub_format_gfx.c), so there's nothing there worth batching.
+        draw_ass_batch(r, frame_to_draw);
+        glBindVertexArray(0); // draw_ass_batch leaves its VAO bound after a flush
+
         SUB_EVENT *ev = frame_to_draw->events;
         while (ev) {
-            if (ev->kind == SUB_EVENT_BITMAP) {
+            if (ev->kind == SUB_EVENT_BITMAP && ev->data.bitmap.format == SUB_BITMAP_RGBA8) {
                 glBindTexture(GL_TEXTURE_2D, r->gl_texture);
-
-                // ASS events carry an 8-bit coverage mask (tinted in the
-                // shader via uColor); GFX/PGS events already are full RGBA.
-                // GL_UNPACK_ALIGNMENT is set once at texture creation above
-                // -- both formats here are tightly packed, so it never
-                // needs to change per event.
-                if (ev->data.bitmap.format == SUB_BITMAP_MASK_R8) {
-                    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8,
-                                 ev->w, ev->h, 0,
-                                 GL_RED, GL_UNSIGNED_BYTE,
-                                 ev->data.bitmap.pixels);
-                    glUseProgram(r->gl_program_mask);
-                    SUB_COLOR c = ev->data.bitmap.color;
-                    glUniform4f(r->u_mask_color,
-                                c.r / 255.0f, c.g / 255.0f, c.b / 255.0f, c.a / 255.0f);
-                } else {
-                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
-                                 ev->w, ev->h, 0,
-                                 GL_RGBA, GL_UNSIGNED_BYTE,
-                                 ev->data.bitmap.pixels);
-                    glUseProgram(r->gl_program_rgba);
-                }
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
+                             ev->w, ev->h, 0,
+                             GL_RGBA, GL_UNSIGNED_BYTE,
+                             ev->data.bitmap.pixels);
+                glUseProgram(r->gl_program_rgba);
 
                 float x1 = (ev->x / (float)frame_to_draw->video_w) * 2.0f - 1.0f;
                 float y1 = 1.0f - (ev->y / (float)frame_to_draw->video_h) * 2.0f;
@@ -395,7 +614,15 @@ static void* egl_render_thread(void* arg) {
     if (r->gl_program_rgba != 0) {
         glDeleteProgram(r->gl_program_rgba);
         glDeleteProgram(r->gl_program_mask);
+        glDeleteProgram(r->gl_program_batch);
         glDeleteTextures(1, &r->gl_texture);
+        glDeleteTextures(1, &r->gl_atlas_texture);
+        glDeleteVertexArrays(1, &r->gl_vao);
+        glDeleteBuffers(1, &r->gl_vbo);
+        free(r->atlas_cpu);
+        free(r->batch_vertices);
+        r->atlas_cpu = NULL;
+        r->batch_vertices = NULL;
     }
     eglDestroyContext(display, context);
     eglTerminate(display);
