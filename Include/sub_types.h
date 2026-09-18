@@ -59,7 +59,15 @@ typedef enum {
 typedef struct SUB_EVENT {
     SUB_EVENT_KIND kind;
 
-    /* Placement, in video-frame pixel space (renderer maps to surface space) */
+    /* Placement. Coordinate space depends on which backend produced this event -- see
+     * SUB_FRAME's video_w/h vs real_video_w/h below:
+     *   SSA/SRT: already in the frame's video_w x video_h (canvas) space -- libass was
+     *   told that size via ass_set_frame_size() and positions its own output there
+     *   directly. SUB_FRAME.real_video_w/h is left 0 for these frames -- the renderer's
+     *   "is this a GFX frame?" check is exactly real_video_w > 0.
+     *   GFX (PGS/VobSub): in the DECODED video's own pixel space (real_video_w x
+     *   real_video_h) -- the renderer must map through SUB_FRAME's video_box_x/y/w/h
+     *   before placing these in canvas space. */
     int x, y, w, h;
 
     union {
@@ -93,8 +101,25 @@ typedef struct {
                                  * (libass) this may be a short "valid until
                                  * next submit" window rather than the cue's
                                  * full duration                            */
-    int         video_w;       /* reference frame size events are placed in */
+    int         video_w;       /* reference frame size events are placed in -- the on-screen
+                                 * subtitle canvas (letterbox/pillarbox bars included), NOT
+                                 * necessarily the decoded video's own pixel size. */
     int         video_h;
+    int         real_video_w;  /* NEW: decoded video's own coded pixel size, fixed for the
+                                 * track's lifetime. THIS is the space GFX-backend
+                                 * (PGS/VobSub) SUB_EVENT_BITMAP x/y/w/h are expressed in --
+                                 * see codec_ffsub.c's frame->width/height. Left 0 for SSA/
+                                 * SRT frames, which don't need it -- their events are
+                                 * already positioned in video_w/video_h space directly. The
+                                 * renderer's "is this a GFX frame?" check is real_video_w > 0. */
+    int         real_video_h;
+    int         video_box_x;   /* NEW: where the video's own on-screen box sits within the
+                                 * canvas (video_w x video_h above) -- e.g. the visible video
+                                 * rect when video_w/h were extended to absorb letterbox
+                                 * bars. Only meaningful when real_video_w > 0. */
+    int         video_box_y;
+    int         video_box_w;
+    int         video_box_h;
     SUB_EVENT  *events;        /* linked list, NULL = nothing to show       */
 } SUB_FRAME;
 

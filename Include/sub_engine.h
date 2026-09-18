@@ -41,7 +41,13 @@ int sub_engine_open_track(SUB_ENGINE *eng, SUB_FMT_ID format_id, int video_w, in
 void sub_engine_close_track(SUB_ENGINE *eng);
 int sub_engine_feed(SUB_ENGINE *eng, const uint8_t *data, int size, int64_t pts_ms, int64_t duration_ms);
 void sub_engine_flush(SUB_ENGINE *eng);
-void sub_engine_resize_video(SUB_ENGINE *eng, int video_w, int video_h);
+// RENAMED from sub_engine_resize_video(): despite the old name, this has only ever been
+// called from sub_engine_surface_resized() below with the on-screen canvas size, never
+// with real decoded-video dimensions -- the old name/params actively invited the exact
+// video-size-vs-canvas-size confusion behind the GFX positioning bug. See
+// sub_engine_set_video_box() further down for the (separate) real video size + on-screen
+// video box plumbing.
+void sub_engine_resize_canvas(SUB_ENGINE *eng, int canvas_w, int canvas_h);
 
 // --- TRACK-GENERATION TOKEN ---
 // open_track()/close_track() each bump an internal counter. Meant for feed
@@ -90,6 +96,19 @@ void sub_engine_set_paused(SUB_ENGINE *eng, int paused);
 void sub_engine_attach_surface(SUB_ENGINE *eng, ANativeWindow *window);
 void sub_engine_detach_surface(SUB_ENGINE *eng);
 void sub_engine_surface_resized(SUB_ENGINE *eng, int width, int height);
+
+// Reports where the video's own on-screen box sits within the subtitle canvas, in canvas
+// pixels relative to the canvas's own top-left -- e.g. the visible video rect when
+// use_sub_margins has extended the canvas to absorb letterbox/pillarbox bars. Needed so
+// GFX (PGS/VobSub) bitmaps, which are decoded in the video's own pixel space, land
+// correctly whenever the canvas's aspect ratio or size diverges from the video's
+// (letterbox, pillarbox, zoom/crop, stretch). Cached on the engine (same pattern as
+// canvas_w/h) so a freshly (re)opened GFX track gets correct geometry immediately rather
+// than waiting for the next call here; also forwarded live to whatever backend is
+// currently active via SUB_FORMAT_BACKEND::set_video_box, for backends that implement it
+// (currently just GFX -- SSA/SRT have no use for this yet). Safe to call at any time,
+// including before a track is open.
+void sub_engine_set_video_box(SUB_ENGINE *eng, int x, int y, int w, int h);
 
 SUB_USER_STYLE *sub_engine_get_style(SUB_ENGINE *eng);
 

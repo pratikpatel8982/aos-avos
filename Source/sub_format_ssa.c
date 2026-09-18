@@ -25,7 +25,9 @@ typedef struct {
     ASS_Renderer   *renderer;
     ASS_Track      *track;
     pthread_mutex_t lock;
-    int             video_w, video_h;  // What ass_set_frame_size() was called with. Java now
+    int             canvas_w, canvas_h;  // RENAMED from video_w/h -- what ass_set_frame_size()
+                                        // was called with, i.e. the on-screen canvas, not the
+                                        // decoded video's own size. Java now
                                         // decides what this should be per-format (full surface
                                         // for plain text, tethered to the video's own on-screen
                                         // box for embedded ASS/SSA) via mSubtitleView's own
@@ -467,11 +469,11 @@ static int sync_styles(SSA_BACKEND *ctx) {
                 // unconditionally pushed those styles' text down from the top instead of up from
                 // the bottom, which is what the vertical-offset slider visually looked like.
                     if (style->Alignment >= 1 && style->Alignment <= 3) {
-                        if (ctx->video_h > 0 && ctx->track->PlayResY > 0) {
-                            float scale_ratio = (float)ctx->track->PlayResY / (float)ctx->video_h;
+                        if (ctx->canvas_h > 0 && ctx->track->PlayResY > 0) {
+                            float scale_ratio = (float)ctx->track->PlayResY / (float)ctx->canvas_h;
                             style->MarginV = (int)(u.margin_bottom * scale_ratio);
                             DBG serprintf("SUB_SURFACE: Margin translation: UI sent %d physical px -> libass mapped to %d logical px (Scale: %f, PlayResY: %d, SurfaceH: %d)\n",
-                                 u.margin_bottom, style->MarginV, scale_ratio, ctx->track->PlayResY, ctx->video_h);
+                                 u.margin_bottom, style->MarginV, scale_ratio, ctx->track->PlayResY, ctx->canvas_h);
                         } else {
                             // Fallback just in case
                             style->MarginV = u.margin_bottom;
@@ -542,8 +544,8 @@ static int ssa_open(SUB_FORMAT_BACKEND *be, const SUB_FORMAT_OPEN_PARAMS *params
     if (!ctx) return -1;
     pthread_mutex_init(&ctx->lock, NULL);
 
-    ctx->video_w = params->video_w;
-    ctx->video_h = params->video_h;
+    ctx->canvas_w = params->video_w;
+    ctx->canvas_h = params->video_h;
 
     ctx->library = ass_library_init();
     if (!ctx->library) {
@@ -562,8 +564,8 @@ static int ssa_open(SUB_FORMAT_BACKEND *be, const SUB_FORMAT_OPEN_PARAMS *params
         return -1;
     }
 
-    int final_w = ctx->video_w > 0 ? ctx->video_w : 1920;
-    int final_h = ctx->video_h > 0 ? ctx->video_h : 1080;
+    int final_w = ctx->canvas_w > 0 ? ctx->canvas_w : 1920;
+    int final_h = ctx->canvas_h > 0 ? ctx->canvas_h : 1080;
     DBG serprintf("SUB_SURFACE: Configured libass renderer frame size: %d x %d\n", final_w, final_h);
     ass_set_frame_size(ctx->renderer, final_w, final_h);
 
@@ -718,9 +720,9 @@ static SUB_FRAME *ssa_render_at(SUB_FORMAT_BACKEND *be, int64_t pts_ms) {
     // Wiggle the frame height by 1 pixel to force Libass to flush its layout
     // cache. This is required because we mutated the ASS_Track styles natively
     // and Libass won't recalculate MarginV layout positions otherwise.
-    if (styles_changed && ctx->video_w > 0 && ctx->video_h > 0) {
-        ass_set_frame_size(ctx->renderer, ctx->video_w, ctx->video_h + 1);
-        ass_set_frame_size(ctx->renderer, ctx->video_w, ctx->video_h);
+    if (styles_changed && ctx->canvas_w > 0 && ctx->canvas_h > 0) {
+        ass_set_frame_size(ctx->renderer, ctx->canvas_w, ctx->canvas_h + 1);
+        ass_set_frame_size(ctx->renderer, ctx->canvas_w, ctx->canvas_h);
     }
 
     int change = 0;
@@ -735,8 +737,9 @@ static SUB_FRAME *ssa_render_at(SUB_FORMAT_BACKEND *be, int64_t pts_ms) {
     SUB_FRAME *frame = calloc(1, sizeof(SUB_FRAME));
     atomic_init(&frame->refcount, 1);
     frame->pts_ms = pts_ms;
-    frame->video_w = ctx->video_w > 0 ? ctx->video_w : 1920;
-    frame->video_h = ctx->video_h > 0 ? ctx->video_h : 1080;
+    frame->video_w = ctx->canvas_w > 0 ? ctx->canvas_w : 1920;   // SUB_FRAME field itself is
+    frame->video_h = ctx->canvas_h > 0 ? ctx->canvas_h : 1080;   // still named video_w/h -- it
+                                                                  // means the canvas for SSA frames.
 
     SUB_EVENT *last_ev = NULL;
 
@@ -790,7 +793,7 @@ static void ssa_free_frame(SUB_FORMAT_BACKEND *be, SUB_FRAME *frame) {
     sub_frame_unref(frame);
 }
 
-static int ssa_resize(SUB_FORMAT_BACKEND *be, int w, int h) {
+static int ssa_resize(SUB_FORMAT_BACKEND *be, int canvas_w, int canvas_h) {
     SSA_BACKEND *ctx = (SSA_BACKEND *)be->priv;
     pthread_mutex_lock(&ctx->lock);
     // Whatever size arrives here is now always correct for the current
@@ -800,13 +803,13 @@ static int ssa_resize(SUB_FORMAT_BACKEND *be, int w, int h) {
     // ASS/SSA -- preserves the author's intended aspect/positioning). So
     // this can just be a direct, format-agnostic passthrough; no separate
     // destination-rect tracking needed.
-    DBG serprintf("SUB_DEBUG: ssa_resize called with w=%d, h=%d (old: %d, %d)\n", w, h, ctx->video_w, ctx->video_h);
-    if (ctx->video_w != w || ctx->video_h != h) {
+    DBG serprintf("SUB_DEBUG: ssa_resize called with w=%d, h=%d (old: %d, %d)\n", canvas_w, canvas_h, ctx->canvas_w, ctx->canvas_h);
+    if (ctx->canvas_w != canvas_w || ctx->canvas_h != canvas_h) {
         DBG serprintf("SUB_DEBUG: Canvas changed.\n");
     }
-    ctx->video_w = w;
-    ctx->video_h = h;
-    ass_set_frame_size(ctx->renderer, w, h);
+    ctx->canvas_w = canvas_w;
+    ctx->canvas_h = canvas_h;
+    ass_set_frame_size(ctx->renderer, canvas_w, canvas_h);
     pthread_mutex_unlock(&ctx->lock);
     return 0;
 }

@@ -7,8 +7,16 @@ typedef struct {
     SUB_FRAME *current_frame; // owned here — never freed by the GL renderer
     int        is_cleared;    // 1 = no subtitle currently visible (PGS clear signal received)
     int        is_dirty;
-    int        video_w;
-    int        video_h;
+    int        canvas_w, canvas_h;           // on-screen GL surface size. NOT the space
+                                              // ev->x/y/w/h are expressed in -- see below.
+    int        real_video_w, real_video_h;   // decoded video's own coded size -- fixed for
+                                              // the track's lifetime. THIS is the space
+                                              // codec_ffsub's x_offset/y_offset/width/height
+                                              // are expressed in.
+    int        video_box_x, video_box_y;     // where the video's own on-screen box sits
+    int        video_box_w, video_box_h;     // within the canvas (post letterbox/pillarbox/
+                                              // zoom-crop/stretch), as reported by
+                                              // sub_engine_set_video_box().
 } GFX_BACKEND;
 
 // ---------------------------------------------------------------------------
@@ -16,8 +24,18 @@ typedef struct {
 // ---------------------------------------------------------------------------
 static int gfx_open(SUB_FORMAT_BACKEND *be, const SUB_FORMAT_OPEN_PARAMS *params) {
     GFX_BACKEND *ctx = calloc(1, sizeof(GFX_BACKEND));
-    ctx->video_w   = params->video_w > 0 ? params->video_w : 1920;
-    ctx->video_h   = params->video_h > 0 ? params->video_h : 1080;
+    ctx->canvas_w     = params->video_w > 0 ? params->video_w : 1920;
+    ctx->canvas_h     = params->video_h > 0 ? params->video_h : 1080;
+    ctx->real_video_w = params->real_video_w > 0 ? params->real_video_w : ctx->canvas_w;
+    ctx->real_video_h = params->real_video_h > 0 ? params->real_video_h : ctx->canvas_h;
+    // Until sub_engine_set_video_box() has reported an actual box, assume the video fills
+    // the canvas 1:1 -- this is today's (buggy) behavior, kept as the fallback so a track
+    // opened before Java's first box report still renders (just not correctly positioned
+    // until the first real report arrives, same as before this fix).
+    ctx->video_box_x  = params->video_box_w > 0 ? params->video_box_x : 0;
+    ctx->video_box_y  = params->video_box_h > 0 ? params->video_box_y : 0;
+    ctx->video_box_w  = params->video_box_w > 0 ? params->video_box_w : ctx->canvas_w;
+    ctx->video_box_h  = params->video_box_h > 0 ? params->video_box_h : ctx->canvas_h;
     ctx->is_cleared = 1; // nothing to show yet
     be->priv = ctx;
     return 0;
@@ -67,8 +85,14 @@ static int gfx_feed_bitmap(SUB_FORMAT_BACKEND *be,
 
     frame->pts_ms      = pts_ms;
     frame->duration_ms = duration_ms;
-    frame->video_w     = ctx->video_w;
-    frame->video_h     = ctx->video_h;
+    frame->video_w        = ctx->canvas_w;
+    frame->video_h        = ctx->canvas_h;
+    frame->real_video_w   = ctx->real_video_w;
+    frame->real_video_h   = ctx->real_video_h;
+    frame->video_box_x    = ctx->video_box_x;
+    frame->video_box_y    = ctx->video_box_y;
+    frame->video_box_w    = ctx->video_box_w;
+    frame->video_box_h    = ctx->video_box_h;
 
     SUB_EVENT *ev = calloc(1, sizeof(SUB_EVENT));
     ev->kind             = SUB_EVENT_BITMAP;
@@ -158,10 +182,34 @@ static void gfx_free_frame(SUB_FORMAT_BACKEND *be, SUB_FRAME *frame) {
 // ---------------------------------------------------------------------------
 // gfx_resize
 // ---------------------------------------------------------------------------
-static int gfx_resize(SUB_FORMAT_BACKEND *be, int video_w, int video_h) {
+static int gfx_resize(SUB_FORMAT_BACKEND *be, int canvas_w, int canvas_h) {
     GFX_BACKEND *ctx = (GFX_BACKEND *)be->priv;
-    ctx->video_w = video_w;
-    ctx->video_h = video_h;
+    // Canvas resize only (rotation, surface recreate) -- real_video_w/h and the video's
+    // own box don't change just because the GL surface did; those come from
+    // gfx_set_video_box() below, driven independently by SurfaceController.
+    ctx->canvas_w = canvas_w;
+    ctx->canvas_h = canvas_h;
+    ctx->is_dirty = 1;
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// gfx_set_video_box
+//
+// Called whenever SurfaceController recomputes where the video itself sits
+// on screen -- rotation, use_sub_margins toggling, a new video's aspect
+// ratio changing the letterbox/pillarbox amount. Independent of gfx_resize:
+// the canvas can resize without the video's box changing shape (e.g. a
+// symmetric screen resize) and the box can change without the canvas
+// resizing (e.g. margins preference flipped without rotating).
+// ---------------------------------------------------------------------------
+static int gfx_set_video_box(SUB_FORMAT_BACKEND *be, int x, int y, int w, int h) {
+    GFX_BACKEND *ctx = (GFX_BACKEND *)be->priv;
+    ctx->video_box_x = x;
+    ctx->video_box_y = y;
+    ctx->video_box_w = w;
+    ctx->video_box_h = h;
+    ctx->is_dirty = 1; // force a redraw with corrected geometry even if the bitmap itself is unchanged
     return 0;
 }
 
@@ -210,6 +258,7 @@ SUB_FORMAT_BACKEND *sub_format_gfx_create(void) {
     be->render_at   = gfx_render_at;
     be->free_frame  = gfx_free_frame;
     be->resize      = gfx_resize;
+    be->set_video_box = gfx_set_video_box;
     be->flush       = gfx_flush;
     be->close       = gfx_close;
     be->get_timeout_ms = gfx_get_timeout_ms;

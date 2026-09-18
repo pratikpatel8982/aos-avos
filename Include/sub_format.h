@@ -49,9 +49,25 @@ typedef struct {
  * ------------------------------------------------------------------ */
 
 typedef struct {
-    int video_w, video_h;          /* known at open time, may be 0 if unknown
-                                     * yet — backend must handle a later
-                                     * resize() call                       */
+    int video_w, video_h;          /* on-screen subtitle canvas size (letterbox bars
+                                     * included), known at open time, may be 0 if unknown
+                                     * yet — backend must handle a later resize() call.
+                                     * NOT the decoded video's own size -- see
+                                     * real_video_w/h below. */
+    int real_video_w, real_video_h;  /* NEW: decoded video's own coded pixel size --
+                                     * fixed for the track's lifetime, never touched by
+                                     * resize(). Only meaningful to the GFX backend
+                                     * (PGS/VobSub bitmap coordinates are expressed in
+                                     * this space -- see codec_ffsub.c); SSA/SRT backends
+                                     * can ignore it. 0 if genuinely unknown, in which
+                                     * case the backend should fall back to video_w/h. */
+    int video_box_x, video_box_y;    /* NEW: where the video's own on-screen box sits
+                                     * within the canvas (video_w x video_h) -- e.g. the
+                                     * visible video rect when the canvas was extended to
+                                     * absorb letterbox bars. Only meaningful to GFX; 0
+                                     * (with video_box_w/h below also 0) means "not yet
+                                     * known, assume the video fills the canvas 1:1". */
+    int video_box_w, video_box_h;
     const uint8_t *codec_private;  /* e.g. ASS [Script Info]+[Styles] header,
                                      * or VOBSUB palette block               */
     int             codec_private_size;
@@ -96,9 +112,21 @@ typedef struct {
  * render_at — produce a SUB_FRAME for the given PTS. Called from the
  *             render thread, potentially every display frame. Must be
  *             safe to call concurrently with feed() from another thread.
- * resize()  — video dimensions changed (rotation, track switch).
+ * resize()  — canvas dimensions changed (rotation, track switch). Despite
+ *             the param names below (kept as video_w/video_h for now), this
+ *             is always the on-screen subtitle canvas size -- see
+ *             sub_engine_resize_canvas() in sub_engine.c, its only caller.
  * flush()   — seek occurred; discard buffered events.
  * close()   — full teardown.
+ *
+ * set_video_box() — OPTIONAL (NULL for SSA/SRT). Reports where the video's
+ *                own on-screen box sits within the canvas, independent of
+ *                resize(): the canvas can resize without the box changing
+ *                shape (e.g. a symmetric screen resize) and the box can
+ *                change without the canvas resizing (e.g. a margins
+ *                preference toggle). Only the GFX backend currently
+ *                implements this -- see sub_engine_set_video_box() in
+ *                sub_engine.c.
  *
  * free_frame() — release a SUB_FRAME previously returned by render_at().
  *                Lets bitmap-backed backends (libass, VOBSUB, PGS) reuse
@@ -118,6 +146,7 @@ struct SUB_FORMAT_BACKEND {
     SUB_FRAME *(*render_at)(SUB_FORMAT_BACKEND *be, int64_t pts_ms);
     void (*free_frame)(SUB_FORMAT_BACKEND *be, SUB_FRAME *frame);
     int  (*resize)    (SUB_FORMAT_BACKEND *be, int video_w, int video_h);
+    int  (*set_video_box)(struct SUB_FORMAT_BACKEND *be, int x, int y, int w, int h); /* NEW, optional */
     int  (*flush)     (SUB_FORMAT_BACKEND *be);
     int  (*close)     (SUB_FORMAT_BACKEND *be);
     int (*get_timeout_ms)(struct SUB_FORMAT_BACKEND *be, int64_t pts_ms);

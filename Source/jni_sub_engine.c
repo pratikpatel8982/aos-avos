@@ -44,6 +44,14 @@ JNIEXPORT void JNICALL Java_com_archos_mediacenter_video_player_SubtitleEngine_n
     sub_engine_detach_surface(get_engine(handle));
 }
 
+// Reports where the video's own on-screen box sits within the subtitle canvas -- see
+// sub_engine_set_video_box()'s doc comment in sub_engine.h. Called by
+// SurfaceController/SubtitleEngine.setVideoBox() whenever that geometry is recomputed
+// (rotation, use_sub_margins toggling, a new video's aspect ratio).
+JNIEXPORT void JNICALL Java_com_archos_mediacenter_video_player_SubtitleEngine_nativeSetVideoBox(JNIEnv *env, jobject thiz, jlong handle, jint x, jint y, jint w, jint h) {
+    sub_engine_set_video_box(get_engine(handle), x, y, w, h);
+}
+
 // --- 3D HYBRID RENDER BRIDGE ---
 
 JNIEXPORT void JNICALL Java_com_archos_mediacenter_video_player_SubtitleEngine_nativeSetUIMode(JNIEnv *env, jobject thiz, jlong handle, jint mode) {

@@ -285,10 +285,31 @@ static void* egl_render_thread(void* arg) {
                              GL_RGBA, GL_UNSIGNED_BYTE,
                              ev->data.bitmap.rgba);
 
-                float x1 = (ev->x / (float)frame_to_draw->video_w) * 2.0f - 1.0f;
-                float y1 = 1.0f - (ev->y / (float)frame_to_draw->video_h) * 2.0f;
-                float x2 = ((ev->x + ev->w) / (float)frame_to_draw->video_w) * 2.0f - 1.0f;
-                float y2 = 1.0f - ((ev->y + ev->h) / (float)frame_to_draw->video_h) * 2.0f;
+                float x1, y1, x2, y2;
+                if (frame_to_draw->real_video_w > 0 && frame_to_draw->real_video_h > 0) {
+                    // GFX (PGS/VobSub) frame: ev->x/y/w/h are in the decoded video's own
+                    // pixel space (real_video_w/h -- see codec_ffsub.c), not the canvas's.
+                    // Map into the video's actual on-screen box (video_box_x/y/w/h,
+                    // reported by sub_engine_set_video_box()) before touching the canvas
+                    // size at all. gfx_open()'s fallbacks guarantee video_box_w/h are
+                    // never 0 whenever real_video_w/h are set, so no extra guard needed.
+                    float box_x = frame_to_draw->video_box_x + (ev->x / (float)frame_to_draw->real_video_w) * frame_to_draw->video_box_w;
+                    float box_y = frame_to_draw->video_box_y + (ev->y / (float)frame_to_draw->real_video_h) * frame_to_draw->video_box_h;
+                    float box_w = (ev->w / (float)frame_to_draw->real_video_w) * frame_to_draw->video_box_w;
+                    float box_h = (ev->h / (float)frame_to_draw->real_video_h) * frame_to_draw->video_box_h;
+
+                    x1 = (box_x / (float)frame_to_draw->video_w) * 2.0f - 1.0f;
+                    y1 = 1.0f - (box_y / (float)frame_to_draw->video_h) * 2.0f;
+                    x2 = ((box_x + box_w) / (float)frame_to_draw->video_w) * 2.0f - 1.0f;
+                    y2 = 1.0f - ((box_y + box_h) / (float)frame_to_draw->video_h) * 2.0f;
+                } else {
+                    // SSA/SRT frame: already positioned in the frame's own video_w x
+                    // video_h (canvas) space by libass -- unchanged from before this fix.
+                    x1 = (ev->x / (float)frame_to_draw->video_w) * 2.0f - 1.0f;
+                    y1 = 1.0f - (ev->y / (float)frame_to_draw->video_h) * 2.0f;
+                    x2 = ((ev->x + ev->w) / (float)frame_to_draw->video_w) * 2.0f - 1.0f;
+                    y2 = 1.0f - ((ev->y + ev->h) / (float)frame_to_draw->video_h) * 2.0f;
+                }
 
                 GLfloat vertices[] = {
                     x1, y2, 0.0f,  0.0f, 1.0f,
@@ -509,33 +530,86 @@ int sub_render_gl_fill_bitmap(SUB_RENDERER *r, void* pixels, int dst_w, int dst_
                 int src_x = ev->x;
                 int src_y = ev->y;
 
-                // 1:1 Pixel copy. No scaling, no rounding errors, no clipping!
-                for (int y = 0; y < src_h; y++) {
-                    int dy = src_y + y;
-                    if (dy < 0 || dy >= dst_h) continue;
+                if (frame->real_video_w > 0 && frame->real_video_h > 0) {
+                    // GFX (PGS/VobSub) frame: src_x/y/w/h are in the decoded video's own
+                    // pixel space, not this destination bitmap's (dst_w/h here is the
+                    // on-screen canvas size -- SubtitleEngine.draw3DSubtitlesInternal()
+                    // sizes mSoftBitmap to viewWidth x viewHeight and reports that same
+                    // size via nativeSurfaceChanged() before this runs). Map through the
+                    // video's own on-screen box first, same transform as the GL path
+                    // above. Nearest-neighbor sampling is a deliberate first pass -- fine
+                    // for subtitle bitmaps, much cheaper than a proper filter for a CPU
+                    // blend path.
+                    float scale_x = (float)frame->video_box_w / (float)frame->real_video_w;
+                    float scale_y = (float)frame->video_box_h / (float)frame->real_video_h;
+                    int box_x0 = frame->video_box_x + (int)(src_x * scale_x);
+                    int box_y0 = frame->video_box_y + (int)(src_y * scale_y);
+                    int box_w  = (int)(src_w * scale_x);
+                    int box_h  = (int)(src_h * scale_y);
 
-                    uint8_t *dst_row = (uint8_t *)pixels + (dy * dst_stride);
-                    const uint8_t *src_row = src_rgba + (y * ev->data.bitmap.stride);
+                    for (int dy = 0; dy < box_h; dy++) {
+                        int py = box_y0 + dy;
+                        if (py < 0 || py >= dst_h) continue;
+                        int sy = (int)(dy / scale_y);
+                        if (sy < 0 || sy >= src_h) continue;
 
-                    for (int x = 0; x < src_w; x++) {
-                        int dx = src_x + x;
-                        if (dx < 0 || dx >= dst_w) continue;
+                        uint8_t *dst_row = (uint8_t *)pixels + (py * dst_stride);
+                        const uint8_t *src_row = src_rgba + (sy * ev->data.bitmap.stride);
 
-                        uint8_t *dst_px = dst_row + (dx * 4);
-                        const uint8_t *src_px = src_row + (x * 4);
+                        for (int dx = 0; dx < box_w; dx++) {
+                            int px = box_x0 + dx;
+                            if (px < 0 || px >= dst_w) continue;
+                            int sx = (int)(dx / scale_x);
+                            if (sx < 0 || sx >= src_w) continue;
 
-                        uint8_t sa = src_px[3];
-                        if (sa == 0) continue;
+                            uint8_t *dst_px = dst_row + (px * 4);
+                            const uint8_t *src_px = src_row + (sx * 4);
 
-                        if (sa == 255 || dst_px[3] == 0) {
-                            dst_px[0] = src_px[0]; dst_px[1] = src_px[1]; dst_px[2] = src_px[2]; dst_px[3] = sa;
-                        } else {
-                            uint8_t dr = dst_px[0], dg = dst_px[1], db = dst_px[2], da = dst_px[3];
-                            int inv_sa = 255 - sa;
-                            dst_px[0] = (src_px[0] * sa + dr * inv_sa) >> 8;
-                            dst_px[1] = (src_px[1] * sa + dg * inv_sa) >> 8;
-                            dst_px[2] = (src_px[2] * sa + db * inv_sa) >> 8;
-                            dst_px[3] = sa + ((da * inv_sa) >> 8);
+                            uint8_t sa = src_px[3];
+                            if (sa == 0) continue;
+
+                            if (sa == 255 || dst_px[3] == 0) {
+                                dst_px[0] = src_px[0]; dst_px[1] = src_px[1]; dst_px[2] = src_px[2]; dst_px[3] = sa;
+                            } else {
+                                uint8_t dr = dst_px[0], dg = dst_px[1], db = dst_px[2], da = dst_px[3];
+                                int inv_sa = 255 - sa;
+                                dst_px[0] = (src_px[0] * sa + dr * inv_sa) >> 8;
+                                dst_px[1] = (src_px[1] * sa + dg * inv_sa) >> 8;
+                                dst_px[2] = (src_px[2] * sa + db * inv_sa) >> 8;
+                                dst_px[3] = sa + ((da * inv_sa) >> 8);
+                            }
+                        }
+                    }
+                } else {
+                    // SSA/SRT frame: already positioned in canvas space, and dst_w/h here
+                    // IS the canvas -- 1:1 pixel copy, unchanged from before this fix.
+                    for (int y = 0; y < src_h; y++) {
+                        int dy = src_y + y;
+                        if (dy < 0 || dy >= dst_h) continue;
+
+                        uint8_t *dst_row = (uint8_t *)pixels + (dy * dst_stride);
+                        const uint8_t *src_row = src_rgba + (y * ev->data.bitmap.stride);
+
+                        for (int x = 0; x < src_w; x++) {
+                            int dx = src_x + x;
+                            if (dx < 0 || dx >= dst_w) continue;
+
+                            uint8_t *dst_px = dst_row + (dx * 4);
+                            const uint8_t *src_px = src_row + (x * 4);
+
+                            uint8_t sa = src_px[3];
+                            if (sa == 0) continue;
+
+                            if (sa == 255 || dst_px[3] == 0) {
+                                dst_px[0] = src_px[0]; dst_px[1] = src_px[1]; dst_px[2] = src_px[2]; dst_px[3] = sa;
+                            } else {
+                                uint8_t dr = dst_px[0], dg = dst_px[1], db = dst_px[2], da = dst_px[3];
+                                int inv_sa = 255 - sa;
+                                dst_px[0] = (src_px[0] * sa + dr * inv_sa) >> 8;
+                                dst_px[1] = (src_px[1] * sa + dg * inv_sa) >> 8;
+                                dst_px[2] = (src_px[2] * sa + db * inv_sa) >> 8;
+                                dst_px[3] = sa + ((da * inv_sa) >> 8);
+                            }
                         }
                     }
                 }

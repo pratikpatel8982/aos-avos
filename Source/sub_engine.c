@@ -43,8 +43,16 @@ struct SUB_ENGINE {
     SUB_USER_STYLE       *style;
     SUB_FORMAT_BACKEND   *active_backend;
 
-    int surface_w;
-    int surface_h;
+    int canvas_w;    // RENAMED from surface_w -- this is the on-screen subtitle rendering
+    int canvas_h;    // canvas's pixel size (letterbox bars included), not a generic "surface".
+
+    // Video's own on-screen box within the canvas above, as last reported by
+    // sub_engine_set_video_box() (driven by SurfaceController). Cached here, same pattern
+    // as canvas_w/h, so a freshly (re)opened GFX track picks up correct geometry
+    // immediately instead of waiting for the next box-change event. All zero until the
+    // first call -- open_track()/gfx_open() treat that as "assume video fills canvas 1:1".
+    int video_box_x, video_box_y;
+    int video_box_w, video_box_h;
 
     // Custom fonts folder (MX Player / mpv-android style third-party fonts
     // dir). Both are simple owned heap strings guarded by eng->lock, snapshot
@@ -134,7 +142,7 @@ void sub_engine_set_default_font_name(SUB_ENGINE *eng, const char *name) {
 
 void sub_engine_attach_surface(SUB_ENGINE *eng, ANativeWindow *window) {
     if (!eng) return;
-    // A new native window is a NEW surface. Any surface_w/h we cached from
+    // A new native window is a NEW surface. Any canvas_w/h we cached from
     // whatever was attached before (e.g. the full-screen player.xml surface,
     // right before switching into floating_player.xml's separate
     // gl_subtitle_view) describes that old surface, not this one. If
@@ -144,8 +152,8 @@ void sub_engine_attach_surface(SUB_ENGINE *eng, ANativeWindow *window) {
     // attach, not just on detach, since some callers attach a new window
     // without ever detaching the previous one first.
     pthread_mutex_lock(&eng->lock);
-    eng->surface_w = 0;
-    eng->surface_h = 0;
+    eng->canvas_w = 0;
+    eng->canvas_h = 0;
     pthread_mutex_unlock(&eng->lock);
     sub_render_gl_attach_surface(eng->renderer, window);
 }
@@ -155,8 +163,8 @@ void sub_engine_detach_surface(SUB_ENGINE *eng) {
     // "next surface attached" can't leave a stale nonzero size sitting
     // around for open_track() to pick up in between.
     pthread_mutex_lock(&eng->lock);
-    eng->surface_w = 0;
-    eng->surface_h = 0;
+    eng->canvas_w = 0;
+    eng->canvas_h = 0;
     pthread_mutex_unlock(&eng->lock);
     sub_render_gl_detach_surface(eng->renderer);
 }
@@ -166,11 +174,36 @@ void sub_engine_surface_resized(SUB_ENGINE *eng, int width, int height) {
     DBG serprintf("SUB_SURFACE: Surface resized event received: %d x %d\n", width, height);
 
     pthread_mutex_lock(&eng->lock);
-    eng->surface_w = width;
-    eng->surface_h = height;
+    eng->canvas_w = width;
+    eng->canvas_h = height;
     pthread_mutex_unlock(&eng->lock);
-    sub_engine_resize_video(eng, width, height); // Tells Libass to wrap text to the new 3D box!
+    sub_engine_resize_canvas(eng, width, height); // Tells Libass to wrap text to the new 3D box!
     sub_render_gl_resize(eng->renderer, width, height);
+}
+
+// See sub_engine.h for the full doc comment.
+void sub_engine_set_video_box(SUB_ENGINE *eng, int x, int y, int w, int h) {
+    if (!eng) return;
+
+    DBG serprintf("SUB_SURFACE: Video box set: (%d,%d) %dx%d\n", x, y, w, h);
+
+    // Call into the active backend -- and broadcast the wake -- while STILL HOLDING
+    // eng->lock, same discipline every other function in this file already uses for a
+    // live backend call (sub_engine_feed/flush/feed_bitmap/feed_raw/resize_canvas/
+    // poll_frame above and below). This used to read `be` under the lock, unlock, and
+    // only then call be->set_video_box() (plus a separate sub_engine_force_wake() call
+    // that re-locks). That gap is exactly the use-after-free shape
+    // sub_engine_close_track()'s own doc comment warns about: a concurrent track switch
+    // (open_track()/close_track() -- e.g. the user changing subtitle tracks between a
+    // GFX and a text format right as this fires) can close()+free() this exact backend
+    // in between, leaving `be` dangling by the time it's actually dereferenced below.
+    pthread_mutex_lock(&eng->lock);
+    eng->video_box_x = x; eng->video_box_y = y;
+    eng->video_box_w = w; eng->video_box_h = h;
+    SUB_FORMAT_BACKEND *be = eng->active_backend;
+    if (be && be->set_video_box) be->set_video_box(be, x, y, w, h);
+    broadcast_wake_locked(eng); // same pattern feed()/flush()/etc. already use
+    pthread_mutex_unlock(&eng->lock);
 }
 
 int sub_engine_open_track(SUB_ENGINE *eng, SUB_FMT_ID format_id, int video_w, int video_h,
@@ -180,11 +213,11 @@ int sub_engine_open_track(SUB_ENGINE *eng, SUB_FMT_ID format_id, int video_w, in
     if (!eng) return -1;
     if (out_generation) *out_generation = 0; // default until the swap below actually succeeds
 
-    // Use the actual reported surface size when known, for every format. This used to branch
+    // Use the actual reported canvas size when known, for every format. This used to branch
     // per format_id (SRT/GFX got the surface size, SSA was locked to the raw video frame), but
     // Java no longer special-cases any category when sizing mSubtitleView -- the use_sub_margins
     // preference now applies uniformly (see SurfaceController.updateSurface()'s mSubtitleView
-    // sizing block), so eng->surface_w/h already reflects the correct canvas for every format,
+    // sizing block), so eng->canvas_w/h already reflects the correct canvas for every format,
     // margins included.
     //
     // For SSA specifically: this does NOT distort the track's authored layout. PlayResX/
@@ -195,12 +228,20 @@ int sub_engine_open_track(SUB_ENGINE *eng, SUB_FMT_ID format_id, int video_w, in
     // which is exactly the intended mpv-style "use the margins" behavior -- it does not change
     // the proportions of anything the author actually authored.
     //
-    // Falls back to the raw video_w/video_h when no surface size is known yet (e.g. before the
+    // For GFX, target_w/target_h below is ONLY the canvas -- video_w/video_h (this function's
+    // own params, the real decoded video size) are passed through separately as
+    // real_video_w/h, since PGS/VobSub bitmap coordinates are in that space, not the canvas's.
+    // See sub_format_gfx.c's gfx_open().
+    //
+    // Falls back to the raw video_w/video_h when no canvas size is known yet (e.g. before the
     // first onSurfaceTextureAvailable/onSurfaceTextureSizeChanged callback has fired).
     int target_w, target_h;
+    int box_x, box_y, box_w, box_h;
     pthread_mutex_lock(&eng->lock);
-    target_w = eng->surface_w > 0 ? eng->surface_w : video_w;
-    target_h = eng->surface_h > 0 ? eng->surface_h : video_h;
+    target_w = eng->canvas_w > 0 ? eng->canvas_w : video_w;
+    target_h = eng->canvas_h > 0 ? eng->canvas_h : video_h;
+    box_x = eng->video_box_x; box_y = eng->video_box_y;
+    box_w = eng->video_box_w; box_h = eng->video_box_h;
     pthread_mutex_unlock(&eng->lock);
 
     DBG serprintf("SUB_SURFACE: Opening track (format=%d) with canvas dimensions: %d x %d (raw video dim: %d x %d)\n",
@@ -233,6 +274,9 @@ int sub_engine_open_track(SUB_ENGINE *eng, SUB_FMT_ID format_id, int video_w, in
 
     SUB_FORMAT_OPEN_PARAMS params = {
         .video_w = target_w, .video_h = target_h,
+        .real_video_w = video_w, .real_video_h = video_h,
+        .video_box_x = box_x, .video_box_y = box_y,
+        .video_box_w = box_w, .video_box_h = box_h,
         .codec_private = codec_private, .codec_private_size = codec_private_size,
         .user_style = eng->style,
         .is_plain_text_format = (format_id == SUB_FMT_SRT), // Tell backend to force styles!
@@ -392,7 +436,9 @@ void sub_engine_flush_gen(SUB_ENGINE *eng, uint64_t token) {
     pthread_mutex_unlock(&eng->lock);
 }
 
-void sub_engine_resize_video(SUB_ENGINE *eng, int video_w, int video_h) {
+// RENAMED from sub_engine_resize_video() -- see sub_engine.h's doc comment. Only ever
+// called from sub_engine_surface_resized() above, always with the canvas size.
+void sub_engine_resize_canvas(SUB_ENGINE *eng, int canvas_w, int canvas_h) {
     if (!eng) return;
     pthread_mutex_lock(&eng->lock);
     if (eng->active_backend && eng->active_backend->resize) {
@@ -403,8 +449,10 @@ void sub_engine_resize_video(SUB_ENGINE *eng, int video_w, int video_h) {
         // video's own box for embedded ASS/SSA -- see updateSurface()), and
         // for the 3D hybrid CPU-blend path (draw3DSubtitles) it's always the
         // full physical screen regardless of format, same as it always was.
-        // No format-specific branching needed here at all.
-        eng->active_backend->resize(eng->active_backend, video_w, video_h);
+        // No format-specific branching needed here at all. (For GFX, real
+        // video size and the video's on-screen box are separate state --
+        // see sub_engine_set_video_box() -- untouched by a canvas resize.)
+        eng->active_backend->resize(eng->active_backend, canvas_w, canvas_h);
     }
     broadcast_wake_locked(eng); // NEW
     pthread_mutex_unlock(&eng->lock);
