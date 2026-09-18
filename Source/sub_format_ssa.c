@@ -732,7 +732,7 @@ static SUB_FRAME *ssa_render_at(SUB_FORMAT_BACKEND *be, int64_t pts_ms) {
         return NULL;
     }
 
-    SUB_FRAME *frame = calloc(1, sizeof(SUB_FRAME));
+    SUB_FRAME *frame = sub_frame_pool_alloc();
     atomic_init(&frame->refcount, 1);
     frame->pts_ms = pts_ms;
     frame->video_w = ctx->video_w > 0 ? ctx->video_w : 1920;
@@ -749,7 +749,12 @@ static SUB_FRAME *ssa_render_at(SUB_FORMAT_BACKEND *be, int64_t pts_ms) {
         uint8_t g = (img->color >> 16) & 0xFF;
         uint8_t b = (img->color >>  8) & 0xFF;
 
-        SUB_EVENT *ev = calloc(1, sizeof(SUB_EVENT));
+        // Pool-allocated (see sub_frame_pool_alloc()'s doc comment): this
+        // loop runs on every ASS_Image in every changed frame, and while
+        // an animation/karaoke line is on screen that's every ~16ms tick
+        // (see ssa_get_timeout_ms() below) for as long as it's visible --
+        // exactly the churn Phase 3's pooling targets.
+        SUB_EVENT *ev = sub_event_pool_alloc();
         ev->kind = SUB_EVENT_BITMAP;
         ev->x = img->dst_x;
         ev->y = img->dst_y;

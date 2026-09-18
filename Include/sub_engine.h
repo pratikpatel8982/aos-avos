@@ -135,3 +135,17 @@ void sub_frame_unref(SUB_FRAME *frame);
 void sub_engine_wait_event(SUB_ENGINE *eng, uint64_t last_generation);
 void sub_engine_force_wake(SUB_ENGINE *eng);
 uint64_t sub_engine_get_generation(SUB_ENGINE *eng);
+
+// --- Frame/event allocation pool (Phase 3) ---
+// Format backends should call these instead of calloc(1, sizeof(SUB_FRAME))
+// / calloc(1, sizeof(SUB_EVENT)) when building a frame in render_at() /
+// feed_bitmap() -- the returned pointer is always zeroed, same contract as
+// calloc, so nothing else about existing call sites (atomic_init'ing the
+// refcount, filling in fields) needs to change. Nodes are recycled back
+// into the pool by sub_frame_unref() automatically; callers never release
+// into the pool directly. Variable-size payloads (ev->data.bitmap.pixels)
+// are NOT pooled -- allocate/free those with plain malloc()/free() as
+// before. See the pool's doc comment in sub_engine.c for why this is a
+// single process-wide pool rather than one per SUB_ENGINE.
+SUB_FRAME *sub_frame_pool_alloc(void);
+SUB_EVENT *sub_event_pool_alloc(void);

@@ -3,6 +3,14 @@
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GLES3/gl3.h>
+#ifndef GL_BGRA_EXT
+// GL_EXT_texture_format_BGRA8888's token -- normally pulled in via
+// GLES2/gl2ext.h, but not guaranteed present through GLES3/gl3.h alone
+// depending on NDK version. Same defensive pattern as EGL_OPENGL_ES3_BIT
+// above: define it ourselves so the build doesn't depend on exactly which
+// headers happen to chain in gl2ext.h. Value per the Khronos registry.
+#define GL_BGRA_EXT 0x80E1
+#endif
 #include <pthread.h>
 
 // Some NDK versions only define this in eglext.h under the *_KHR suffix
@@ -32,8 +40,16 @@
 // this just flushes and starts a second batch (see draw_ass_batch()) rather
 // than failing. Real ASS frames are nowhere near this even for karaoke.
 #define SUB_BATCH_MAX_QUADS       256
-#define SUB_BATCH_VERTS_PER_QUAD  6   // two triangles, no strip/primitive-restart bookkeeping
-#define SUB_BATCH_FLOATS_PER_VERT 8   // x, y, u, v, r, g, b, a
+// Phase 3: instanced draw. A single shared 4-vertex unit quad (see
+// kUnitQuadCorners in egl_render_thread) is stamped out once per packed
+// image via glDrawArraysInstanced, instead of Phase 2's approach of writing
+// out 6 explicit vertices per quad (2 triangles x 8 floats each = 48
+// floats/quad). Now each image only contributes one 12-float instance
+// record -- a rect (4), a uv rect (4), and a color (4) -- so both the CPU
+// packing work in draw_ass_batch() and the glBufferSubData payload shrink
+// by 4x versus Phase 2, on top of Phase 2's draw-call reduction.
+#define SUB_BATCH_VERTS_PER_INSTANCE     4   // shared unit-quad triangle strip: TL, TR, BL, BR
+#define SUB_BATCH_FLOATS_PER_INSTANCE   12   // rect.xyzw (left,top,right,bottom NDC) + uv.xyzw (left,top,right,bottom) + color.rgba
 
 struct SUB_RENDERER {
     ANativeWindow  *window;
@@ -52,12 +68,16 @@ struct SUB_RENDERER {
     GLuint           gl_program_mask;  // single-image mask*color tint -- fallback only, see draw_mask_immediate()
     GLint            u_mask_color;     // "uColor" uniform location in gl_program_mask
     GLuint           gl_program_batch; // batched mask*color tint -- the common-case ASS path, color rides per-vertex
-    GLuint           gl_texture;       // shared by gl_program_rgba draws and the gl_program_mask fallback
+    GLuint           gl_texture;       // shared by gl_program_rgba draws, the gl_program_mask fallback, and GFX/PGS uploads
+    int              has_bgra_ext;     // GL_EXT_texture_format_BGRA8888 (or _APPLE_) support, queried once at GL init -- see upload_gfx_texture()
+    uint8_t         *bgra_fallback_scratch;     // lazily grown CPU swizzle buffer, only touched on devices without has_bgra_ext
+    size_t           bgra_fallback_scratch_cap; // current allocation size of bgra_fallback_scratch, in bytes
     GLuint           gl_atlas_texture; // persistent R8 atlas for gl_program_batch
-    GLuint           gl_vao;           // persistent vertex layout for the batched draw (pos/uv/color)
-    GLuint           gl_vbo;           // persistent vertex buffer backing that VAO
+    GLuint           gl_vao_batch;     // persistent vertex layout for the instanced batched draw (corner/rect/uv/color)
+    GLuint           gl_vbo_unit_quad; // static 4-vertex unit quad (divisor 0) shared by every instance
+    GLuint           gl_vbo_instance;  // dynamic per-instance buffer (divisor 1) backing gl_vao_batch, re-filled every flush
     uint8_t         *atlas_cpu;        // SUB_ATLAS_DIM*SUB_ATLAS_DIM scratch, packed fresh each redraw, reused across redraws
-    GLfloat         *batch_vertices;   // SUB_BATCH_MAX_QUADS*SUB_BATCH_VERTS_PER_QUAD*SUB_BATCH_FLOATS_PER_VERT scratch
+    GLfloat         *batch_instances;  // SUB_BATCH_MAX_QUADS*SUB_BATCH_FLOATS_PER_INSTANCE scratch, mirrors gl_vbo_instance
     GLint            attrib_pos;       // shared across gl_program_rgba/gl_program_mask -- explicit
     GLint            attrib_tex;       // glBindAttribLocation(0/1) in create_program() guarantees this
     void            *engine;
@@ -86,13 +106,19 @@ static GLuint create_program(const char *vertex_src, const char *fragment_src) {
     glAttachShader(program, fs);
     // Pin all three programs to the same attribute slots so one set of
     // locations (queried once, below) is valid no matter which program is
-    // currently bound when we draw. gl_program_rgba/gl_program_mask don't
-    // declare "aColor" -- binding it anyway is a documented no-op per the
-    // GL spec (a binding only takes effect for attributes the shader
-    // actually uses), so this is safe to call unconditionally.
+    // currently bound when we draw. Not every program declares every one of
+    // these names -- e.g. gl_program_rgba/gl_program_mask don't declare
+    // "aColor", and only gl_program_batch declares "aCorner"/"aRectNDC"/
+    // "aUVRect" -- binding a name the shader doesn't use is a documented
+    // no-op per the GL spec (a binding only takes effect for attributes the
+    // shader actually declares), so this is safe to call unconditionally
+    // for all three programs.
     glBindAttribLocation(program, 0, "aPosition");
+    glBindAttribLocation(program, 0, "aCorner");   // gl_program_batch's per-vertex unit-quad corner, same slot as aPosition
     glBindAttribLocation(program, 1, "aTexCoord");
     glBindAttribLocation(program, 2, "aColor");
+    glBindAttribLocation(program, 3, "aRectNDC");  // gl_program_batch only: per-instance dest rect
+    glBindAttribLocation(program, 4, "aUVRect");   // gl_program_batch only: per-instance atlas uv rect
     glLinkProgram(program);
 
     GLint status = 0;
@@ -105,6 +131,63 @@ static GLuint create_program(const char *vertex_src, const char *fragment_src) {
     glDeleteShader(vs);
     glDeleteShader(fs);
     return program;
+}
+
+// --- GFX/PGS texture upload: direct BGRA when the device supports it ---
+// codec_ffsub always decodes to BGRA (see sub_format_gfx.c); Phase 1/2 had
+// the format backend swizzle every pixel to RGBA on the CPU before it ever
+// reached here. Phase 3: the format backend now hands the BGRA bytes
+// through untouched (tagged SUB_BITMAP_BGRA8), and this function decides,
+// per-device, how to get them onto the GPU:
+//   - has_bgra_ext (GL_EXT_texture_format_BGRA8888, queried once at GL
+//     init): upload directly as GL_BGRA_EXT. The GPU samples it exactly
+//     like RGBA in the shader -- texture() already returns .rgba in the
+//     right order -- so gl_program_rgba's fragment shader needs no change.
+//   - No extension: fall back to the same one-time CPU swizzle Phase 1/2
+//     always paid, just now only on the devices that actually need it.
+//     The scratch buffer is grown lazily and reused across frames.
+static void upload_gfx_texture(SUB_RENDERER *r, SUB_EVENT *ev) {
+    glBindTexture(GL_TEXTURE_2D, r->gl_texture);
+
+    if (ev->data.bitmap.format == SUB_BITMAP_BGRA8) {
+        if (r->has_bgra_ext) {
+            // Both internalformat and format must be GL_BGRA_EXT per the
+            // extension spec -- this is purely an upload-format choice,
+            // no shader change needed.
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_BGRA_EXT, ev->w, ev->h, 0,
+                         GL_BGRA_EXT, GL_UNSIGNED_BYTE, ev->data.bitmap.pixels);
+            return;
+        }
+
+        size_t needed = (size_t)ev->w * (size_t)ev->h * 4;
+        if (needed > r->bgra_fallback_scratch_cap) {
+            uint8_t *grown = realloc(r->bgra_fallback_scratch, needed);
+            if (grown) {
+                r->bgra_fallback_scratch = grown;
+                r->bgra_fallback_scratch_cap = needed;
+            }
+        }
+        if (r->bgra_fallback_scratch && needed <= r->bgra_fallback_scratch_cap) {
+            const uint8_t *src = ev->data.bitmap.pixels;
+            uint8_t *dst = r->bgra_fallback_scratch;
+            int count = ev->w * ev->h;
+            for (int i = 0; i < count; i++) {
+                dst[0] = src[2]; dst[1] = src[1]; dst[2] = src[0]; dst[3] = src[3];
+                src += 4; dst += 4;
+            }
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, ev->w, ev->h, 0,
+                         GL_RGBA, GL_UNSIGNED_BYTE, r->bgra_fallback_scratch);
+        }
+        // If the scratch grow failed, we skip the upload rather than crash --
+        // same "degrade, don't drop the frame" philosophy as the oversized-
+        // mask fallback below. The stale texture from the previous draw
+        // stays bound; this event's quad just won't get redrawn this pass.
+        return;
+    }
+
+    // SUB_BITMAP_RGBA8: already the right byte order, upload as-is.
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, ev->w, ev->h, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, ev->data.bitmap.pixels);
 }
 
 // --- ASS mask fallback: single oversized image ---
@@ -144,9 +227,12 @@ static void draw_mask_immediate(SUB_RENDERER *r, const SUB_FRAME *frame_to_draw,
     glDisableVertexAttribArray(r->attrib_tex);
 }
 
-// Uploads whatever's been packed into atlas_cpu so far and draws all of it
-// in one call. The only glTexImage2D + glDrawArrays pair for however many
-// mask images fit in this batch, instead of one pair per image.
+// Uploads whatever's been packed into atlas_cpu plus this batch's instance
+// records, and draws all of it in one instanced call. The only
+// glTexImage2D + glDrawArraysInstanced pair for however many mask images
+// fit in this batch, instead of one pair per image (Phase 2) or one
+// non-instanced draw walking 6 explicit vertices per quad (Phase 2's
+// interim state before this instancing pass).
 static void flush_ass_batch(SUB_RENDERER *r, int quad_count) {
     if (quad_count <= 0) return;
 
@@ -155,29 +241,33 @@ static void flush_ass_batch(SUB_RENDERER *r, int quad_count) {
                  GL_RED, GL_UNSIGNED_BYTE, r->atlas_cpu);
 
     glUseProgram(r->gl_program_batch);
-    glBindVertexArray(r->gl_vao);
-    glBindBuffer(GL_ARRAY_BUFFER, r->gl_vbo);
+    glBindVertexArray(r->gl_vao_batch);
+    glBindBuffer(GL_ARRAY_BUFFER, r->gl_vbo_instance);
     glBufferSubData(GL_ARRAY_BUFFER, 0,
-                     (GLsizeiptr)quad_count * SUB_BATCH_VERTS_PER_QUAD * SUB_BATCH_FLOATS_PER_VERT * sizeof(GLfloat),
-                     r->batch_vertices);
+                     (GLsizeiptr)quad_count * SUB_BATCH_FLOATS_PER_INSTANCE * sizeof(GLfloat),
+                     r->batch_instances);
 
-    glDrawArrays(GL_TRIANGLES, 0, quad_count * SUB_BATCH_VERTS_PER_QUAD);
+    // 4 vertices (the shared unit-quad strip, divisor 0) stamped out
+    // quad_count times (the per-instance rect/uv/color attributes, divisor
+    // 1) -- one draw call regardless of quad_count, same as Phase 2, but
+    // now with 4x less vertex data touched per quad.
+    glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, SUB_BATCH_VERTS_PER_INSTANCE, quad_count);
 
     glBindVertexArray(0);
 }
 
 // Packs every SUB_BITMAP_MASK_R8 event in the frame's event list into the
-// atlas with a simple shelf packer, building one vertex per corner (with
-// this image's own color baked into those vertices -- see
-// SUB_BATCH_FLOATS_PER_VERT) as it goes, and flushes in as few draw calls
-// as the atlas/batch size allows. RGBA8 (GFX) events are left untouched for
-// the caller's existing immediate-draw loop.
+// atlas with a simple shelf packer, building one instance record per image
+// (this image's rect, atlas uv rect, and its own color -- see
+// SUB_BATCH_FLOATS_PER_INSTANCE) as it goes, and flushes in as few
+// instanced draw calls as the atlas/batch size allows. RGBA8 (GFX) events
+// are left untouched for the caller's existing immediate-draw loop.
 static void draw_ass_batch(SUB_RENDERER *r, const SUB_FRAME *frame_to_draw) {
-    if (!r->atlas_cpu || !r->batch_vertices) return; // allocation failed at init -- nothing to batch with
+    if (!r->atlas_cpu || !r->batch_instances) return; // allocation failed at init -- nothing to batch with
 
     int cursor_x = 0, cursor_y = 0, shelf_h = 0;
     int quad_count = 0;
-    GLfloat *vtx = r->batch_vertices;
+    GLfloat *inst = r->batch_instances;
 
     for (SUB_EVENT *ev = frame_to_draw->events; ev; ev = ev->next) {
         if (ev->kind != SUB_EVENT_BITMAP || ev->data.bitmap.format != SUB_BITMAP_MASK_R8)
@@ -194,7 +284,7 @@ static void draw_ass_batch(SUB_RENDERER *r, const SUB_FRAME *frame_to_draw) {
             // it relative to anything still sitting in the batch buffer.
             flush_ass_batch(r, quad_count);
             cursor_x = 0; cursor_y = 0; shelf_h = 0; quad_count = 0;
-            vtx = r->batch_vertices;
+            inst = r->batch_instances;
 
             draw_mask_immediate(r, frame_to_draw, ev);
             continue;
@@ -212,7 +302,7 @@ static void draw_ass_batch(SUB_RENDERER *r, const SUB_FRAME *frame_to_draw) {
             // atlas (already checked against SUB_ATLAS_DIM above).
             flush_ass_batch(r, quad_count);
             cursor_x = 0; cursor_y = 0; shelf_h = 0; quad_count = 0;
-            vtx = r->batch_vertices;
+            inst = r->batch_instances;
         }
 
         const uint8_t *src = ev->data.bitmap.pixels;
@@ -234,15 +324,17 @@ static void draw_ass_batch(SUB_RENDERER *r, const SUB_FRAME *frame_to_draw) {
         SUB_COLOR c = ev->data.bitmap.color;
         float cr = c.r / 255.0f, cg = c.g / 255.0f, cb = c.b / 255.0f, ca = c.a / 255.0f;
 
-        // Two triangles per quad: (x1,y2)-(x2,y2)-(x1,y1) and (x2,y2)-(x2,y1)-(x1,y1)
-        float quad[SUB_BATCH_VERTS_PER_QUAD][4] = {
-            { x1, y2, u1, v1 }, { x2, y2, u2, v1 }, { x1, y1, u1, v2 },
-            { x2, y2, u2, v1 }, { x2, y1, u2, v2 }, { x1, y1, u1, v2 },
-        };
-        for (int i = 0; i < SUB_BATCH_VERTS_PER_QUAD; i++) {
-            *vtx++ = quad[i][0]; *vtx++ = quad[i][1]; *vtx++ = quad[i][2]; *vtx++ = quad[i][3];
-            *vtx++ = cr; *vtx++ = cg; *vtx++ = cb; *vtx++ = ca;
-        }
+        // One instance record per image: rect (left=x1, top=y1, right=x2,
+        // bottom=y2 in NDC) + uv rect (left=u1, top=v2, right=u2,
+        // bottom=v1 -- note v1/v2 swap vs. the rect: v1 is the atlas row
+        // for the image's screen-space BOTTOM, v2 for its TOP, same
+        // mapping Phase 2's per-vertex quad used) + this image's color.
+        // The vertex shader (gl_program_batch) mixes between the rect's
+        // corners using the shared unit quad's per-vertex 0/1 corner
+        // attribute -- see kUnitQuadCorners below.
+        *inst++ = x1; *inst++ = y1; *inst++ = x2; *inst++ = y2;
+        *inst++ = u1; *inst++ = v2; *inst++ = u2; *inst++ = v1;
+        *inst++ = cr; *inst++ = cg; *inst++ = cb; *inst++ = ca;
 
         cursor_x += iw;
         shelf_h = shelf_h > ih ? shelf_h : ih;
@@ -385,20 +477,43 @@ static void* egl_render_thread(void* arg) {
         r->attrib_tex  = glGetAttribLocation(r->gl_program_rgba, "aTexCoord");
         r->u_mask_color = glGetUniformLocation(r->gl_program_mask, "uColor");
 
-        // Batched ASS path: color rides per-vertex (aColor) instead of a
-        // uniform, so one draw call can mix images that each have their
-        // own color (e.g. fill vs. outline vs. shadow layers) -- a single
-        // "uColor" uniform couldn't do that across a batch.
+        // Queried once here (a live GL context is required, which is why
+        // this can't be decided in sub_format_gfx.c on the decode thread --
+        // see upload_gfx_texture() for how the result is used). glGetString
+        // still returns a space-separated extension list under ES 3.0's
+        // compatibility surface, unlike desktop core profiles that dropped
+        // it in favor of glGetStringi.
+        const char *gl_extensions = (const char *)glGetString(GL_EXTENSIONS);
+        r->has_bgra_ext = gl_extensions &&
+            (strstr(gl_extensions, "GL_EXT_texture_format_BGRA8888") != NULL ||
+             strstr(gl_extensions, "GL_APPLE_texture_format_BGRA8888") != NULL);
+        DBG serprintf("SUB_RENDER_GL: GL_EXT_texture_format_BGRA8888 %s\n",
+                      r->has_bgra_ext ? "available -- direct GFX/PGS upload" : "absent -- falling back to CPU swizzle");
+
+        // Batched ASS path (instanced). aCorner is the shared unit-quad
+        // vertex (0/1 per axis, divisor 0 -- same 4 vertices for every
+        // instance); aRectNDC/aUVRect/aColor are per-instance (divisor 1).
+        // Interpolating between the rect's corners with the unit-quad's
+        // 0/1 corner value reconstructs the same 4 screen positions/uvs
+        // Phase 2 wrote out explicitly per vertex, but now computed here
+        // instead of packed by the CPU -- see draw_ass_batch()'s instance
+        // record layout for the exact corner<->rect mapping. Color rides
+        // per-instance (not a uniform) so one draw call can still mix
+        // images that each have their own color (fill vs. outline vs.
+        // shadow layers), same reasoning Phase 2 had for per-vertex color.
         const char* vs_src_batch =
         "#version 300 es\n"
-        "in vec2 aPosition;\n"
-        "in vec2 aTexCoord;\n"
+        "in vec2 aCorner;\n"
+        "in vec4 aRectNDC;\n"   // x1(left), y1(top), x2(right), y2(bottom)
+        "in vec4 aUVRect;\n"    // u1(left), v_top, u2(right), v_bottom
         "in vec4 aColor;\n"
         "out vec2 vTexCoord;\n"
         "out vec4 vColor;\n"
         "void main() {\n"
-        "  gl_Position = vec4(aPosition, 0.0, 1.0);\n"
-        "  vTexCoord = aTexCoord;\n"
+        "  float x = mix(aRectNDC.x, aRectNDC.z, aCorner.x);\n"
+        "  float y = mix(aRectNDC.y, aRectNDC.w, aCorner.y);\n"
+        "  gl_Position = vec4(x, y, 0.0, 1.0);\n"
+        "  vTexCoord = vec2(mix(aUVRect.x, aUVRect.z, aCorner.x), mix(aUVRect.y, aUVRect.w, aCorner.y));\n"
         "  vColor = aColor;\n"
         "}\n";
         const char* fs_src_batch =
@@ -433,29 +548,56 @@ static void* egl_render_thread(void* arg) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-        // Persistent VBO + VAO: vertex layout (pos.xy, uv.xy, color.rgba)
-        // is configured exactly once here, not re-enabled/disabled on
-        // every draw the way the immediate paths above still do.
-        glGenBuffers(1, &r->gl_vbo);
-        glBindBuffer(GL_ARRAY_BUFFER, r->gl_vbo);
+        // Static unit-quad corner data, shared by every instance: a
+        // triangle strip TL(0,0), TR(1,0), BL(0,1), BR(1,1) -- matches
+        // Phase 2's original two-triangle winding ((x1,y2)-(x2,y2)-(x1,y1)
+        // then (x2,y2)-(x2,y1)-(x1,y1)) via the equivalent 4-vertex strip.
+        // Uploaded once here and never touched again -- only the
+        // per-instance buffer below changes per redraw.
+        static const GLfloat kUnitQuadCorners[] = {
+            0.0f, 0.0f,  // TL
+            1.0f, 0.0f,  // TR
+            0.0f, 1.0f,  // BL
+            1.0f, 1.0f,  // BR
+        };
+        glGenBuffers(1, &r->gl_vbo_unit_quad);
+        glBindBuffer(GL_ARRAY_BUFFER, r->gl_vbo_unit_quad);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(kUnitQuadCorners), kUnitQuadCorners, GL_STATIC_DRAW);
+
+        // Per-instance buffer (rect.xyzw + uv.xyzw + color.rgba per quad),
+        // re-uploaded via glBufferSubData every flush -- same DYNAMIC_DRAW
+        // pattern Phase 2 used for its per-vertex buffer, just 4x smaller
+        // per quad now that a quad is one instance record instead of 6
+        // explicit vertices.
+        glGenBuffers(1, &r->gl_vbo_instance);
+        glBindBuffer(GL_ARRAY_BUFFER, r->gl_vbo_instance);
         glBufferData(GL_ARRAY_BUFFER,
-                     (GLsizeiptr)SUB_BATCH_MAX_QUADS * SUB_BATCH_VERTS_PER_QUAD * SUB_BATCH_FLOATS_PER_VERT * sizeof(GLfloat),
+                     (GLsizeiptr)SUB_BATCH_MAX_QUADS * SUB_BATCH_FLOATS_PER_INSTANCE * sizeof(GLfloat),
                      NULL, GL_DYNAMIC_DRAW);
 
-        glGenVertexArrays(1, &r->gl_vao);
-        glBindVertexArray(r->gl_vao);
-        glBindBuffer(GL_ARRAY_BUFFER, r->gl_vbo);
-        GLsizei batch_stride = SUB_BATCH_FLOATS_PER_VERT * sizeof(GLfloat);
-        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, batch_stride, (const void*)0);
-        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, batch_stride, (const void*)(2 * sizeof(GLfloat)));
-        glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, batch_stride, (const void*)(4 * sizeof(GLfloat)));
+        glGenVertexArrays(1, &r->gl_vao_batch);
+        glBindVertexArray(r->gl_vao_batch);
+
+        glBindBuffer(GL_ARRAY_BUFFER, r->gl_vbo_unit_quad);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(GLfloat), (const void*)0);
         glEnableVertexAttribArray(0);
-        glEnableVertexAttribArray(1);
+        glVertexAttribDivisor(0, 0); // same 4 corners for every instance
+
+        glBindBuffer(GL_ARRAY_BUFFER, r->gl_vbo_instance);
+        GLsizei inst_stride = SUB_BATCH_FLOATS_PER_INSTANCE * sizeof(GLfloat);
+        glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, inst_stride, (const void*)0);
+        glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, inst_stride, (const void*)(4 * sizeof(GLfloat)));
+        glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, inst_stride, (const void*)(8 * sizeof(GLfloat)));
+        glEnableVertexAttribArray(3);
+        glEnableVertexAttribArray(4);
         glEnableVertexAttribArray(2);
+        glVertexAttribDivisor(3, 1); // advance once per instance, not per vertex
+        glVertexAttribDivisor(4, 1);
+        glVertexAttribDivisor(2, 1);
         glBindVertexArray(0);
 
         r->atlas_cpu = calloc(1, (size_t)SUB_ATLAS_DIM * SUB_ATLAS_DIM);
-        r->batch_vertices = malloc((size_t)SUB_BATCH_MAX_QUADS * SUB_BATCH_VERTS_PER_QUAD * SUB_BATCH_FLOATS_PER_VERT * sizeof(GLfloat));
+        r->batch_instances = malloc((size_t)SUB_BATCH_MAX_QUADS * SUB_BATCH_FLOATS_PER_INSTANCE * sizeof(GLfloat));
                     }
                 }
             }
@@ -559,12 +701,9 @@ static void* egl_render_thread(void* arg) {
 
         SUB_EVENT *ev = frame_to_draw->events;
         while (ev) {
-            if (ev->kind == SUB_EVENT_BITMAP && ev->data.bitmap.format == SUB_BITMAP_RGBA8) {
-                glBindTexture(GL_TEXTURE_2D, r->gl_texture);
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
-                             ev->w, ev->h, 0,
-                             GL_RGBA, GL_UNSIGNED_BYTE,
-                             ev->data.bitmap.pixels);
+            if (ev->kind == SUB_EVENT_BITMAP &&
+                (ev->data.bitmap.format == SUB_BITMAP_RGBA8 || ev->data.bitmap.format == SUB_BITMAP_BGRA8)) {
+                upload_gfx_texture(r, ev);
                 glUseProgram(r->gl_program_rgba);
 
                 float x1 = (ev->x / (float)frame_to_draw->video_w) * 2.0f - 1.0f;
@@ -617,12 +756,16 @@ static void* egl_render_thread(void* arg) {
         glDeleteProgram(r->gl_program_batch);
         glDeleteTextures(1, &r->gl_texture);
         glDeleteTextures(1, &r->gl_atlas_texture);
-        glDeleteVertexArrays(1, &r->gl_vao);
-        glDeleteBuffers(1, &r->gl_vbo);
+        glDeleteVertexArrays(1, &r->gl_vao_batch);
+        glDeleteBuffers(1, &r->gl_vbo_unit_quad);
+        glDeleteBuffers(1, &r->gl_vbo_instance);
         free(r->atlas_cpu);
-        free(r->batch_vertices);
+        free(r->batch_instances);
+        free(r->bgra_fallback_scratch);
         r->atlas_cpu = NULL;
-        r->batch_vertices = NULL;
+        r->batch_instances = NULL;
+        r->bgra_fallback_scratch = NULL;
+        r->bgra_fallback_scratch_cap = 0;
     }
     eglDestroyContext(display, context);
     eglTerminate(display);
@@ -842,9 +985,41 @@ int sub_render_gl_fill_bitmap(SUB_RENDERER *r, void* pixels, int dst_w, int dst_
                             }
                         }
                     }
+                } else if (ev->data.bitmap.format == SUB_BITMAP_BGRA8) {
+                    // GFX/PGS on the codec's native byte order. The GL draw
+                    // loop may upload this directly as GL_BGRA_EXT or fall
+                    // back to swizzling for the GPU depending on the
+                    // device (see upload_gfx_texture() above) -- but this
+                    // CPU bridge has no GPU involved at all, so it must do
+                    // its own R/B swap here reading the buffer's real byte
+                    // order, independent of whichever path the GL side
+                    // took for this device.
+                    const uint8_t *src_bgra = ev->data.bitmap.pixels;
+
+                    for (int y = 0; y < src_h; y++) {
+                        int dy = src_y + y;
+                        if (dy < 0 || dy >= dst_h) continue;
+
+                        uint8_t *dst_row = (uint8_t *)pixels + (dy * dst_stride);
+                        const uint8_t *src_row = src_bgra + (y * ev->data.bitmap.stride);
+
+                        for (int x = 0; x < src_w; x++) {
+                            int dx = src_x + x;
+                            if (dx < 0 || dx >= dst_w) continue;
+
+                            uint8_t *dst_px = dst_row + (dx * 4);
+                            const uint8_t *src_px = src_row + (x * 4);
+
+                            uint8_t sa = src_px[3];
+                            if (sa == 0) continue;
+
+                            // BGRA in memory: src_px[0]=B, [1]=G, [2]=R, [3]=A
+                            cpu_blend_over(dst_px, src_px[2], src_px[1], src_px[0], sa);
+                        }
+                    }
                 } else {
-                    // GFX/PGS: already real RGBA, 1:1 pixel copy. No scaling,
-                    // no rounding errors, no clipping!
+                    // SUB_BITMAP_RGBA8: already real RGBA, 1:1 pixel copy. No
+                    // scaling, no rounding errors, no clipping!
                     const uint8_t *src_rgba = ev->data.bitmap.pixels;
 
                     for (int y = 0; y < src_h; y++) {

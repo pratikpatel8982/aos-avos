@@ -551,6 +551,109 @@ int sub_engine_feed_raw(SUB_ENGINE *eng, const uint8_t *data, int size) {
     return ret;
 }
 
+// --- Frame/event allocation pool (Phase 3) ---
+//
+// SUB_FRAME/SUB_EVENT nodes churn heavily while an ASS animation is on
+// screen: ssa_get_timeout_ms() wakes roughly every ~16ms while text is up,
+// and every tick that actually changes something rebuilds a fresh
+// SUB_FRAME plus one SUB_EVENT per mask layer (fill/outline/shadow/karaoke
+// syllables), then sub_frame_unref() tears the *previous* set down a
+// moment later. This recycles those fixed-size struct nodes instead of
+// round-tripping every single one of them through calloc()/free().
+//
+// Deliberately NOT pooling the variable-size payload buffers
+// (ev->data.bitmap.pixels) alongside the nodes: those vary per-image, a
+// size-bucketed pool for them is real added complexity, and this phase's
+// request was specifically the struct allocation churn -- can revisit
+// with profiling data if the remaining malloc()/free() on those buffers
+// turns out to matter too.
+//
+// Why a single process-wide pool rather than one per SUB_ENGINE: both
+// sub_frame_unref() and sub_engine_free_frame() are free functions with no
+// SUB_ENGINE* parameter (see sub_engine.h), so there is no per-engine home
+// to hang a pool off without changing that public API/ABI. A frame built
+// by one engine's format backend (decode thread) is routinely released by
+// a different thread entirely (the GL render thread, via
+// sub_engine_release_frame()), so the pool needs its own lock independent
+// of any single engine's ->lock regardless.
+//
+// Caps are deliberately small: this only needs to cover the handful of
+// frames/events in flight at once (current + just-superseded), not become
+// an unbounded cache. Anything beyond the cap is simply free()'d as before
+// -- pool exhaustion degrades to Phase 2's calloc/free behavior, it never
+// blocks or drops content.
+//
+// No explicit teardown/shutdown for this pool: whatever's sitting in it at
+// process exit is reclaimed by the OS along with everything else, and
+// adding a shutdown call would mean picking a safe point where no other
+// thread could still be mid-release -- not worth it for at most 8 frames +
+// 64 events (a few hundred bytes to low KB).
+#define SUB_POOL_MAX_FRAMES 8
+#define SUB_POOL_MAX_EVENTS 64
+
+static pthread_mutex_t s_sub_pool_lock = PTHREAD_MUTEX_INITIALIZER;
+static SUB_FRAME *s_frame_pool[SUB_POOL_MAX_FRAMES];
+static int        s_frame_pool_count = 0;
+static SUB_EVENT *s_event_pool[SUB_POOL_MAX_EVENTS];
+static int        s_event_pool_count = 0;
+
+SUB_FRAME *sub_frame_pool_alloc(void) {
+    SUB_FRAME *frame = NULL;
+
+    pthread_mutex_lock(&s_sub_pool_lock);
+    if (s_frame_pool_count > 0) {
+        frame = s_frame_pool[--s_frame_pool_count];
+    }
+    pthread_mutex_unlock(&s_sub_pool_lock);
+
+    if (frame) {
+        memset(frame, 0, sizeof(SUB_FRAME)); // same zeroed contract calloc() gave callers
+    } else {
+        frame = calloc(1, sizeof(SUB_FRAME));
+    }
+    return frame;
+}
+
+SUB_EVENT *sub_event_pool_alloc(void) {
+    SUB_EVENT *ev = NULL;
+
+    pthread_mutex_lock(&s_sub_pool_lock);
+    if (s_event_pool_count > 0) {
+        ev = s_event_pool[--s_event_pool_count];
+    }
+    pthread_mutex_unlock(&s_sub_pool_lock);
+
+    if (ev) {
+        memset(ev, 0, sizeof(SUB_EVENT));
+    } else {
+        ev = calloc(1, sizeof(SUB_EVENT));
+    }
+    return ev;
+}
+
+// Returns a spent node to its pool, or free()s it if the pool is already
+// at its cap. Static: only sub_frame_unref() below tears frames/events
+// down, so nothing else needs to call these.
+static void sub_frame_pool_release(SUB_FRAME *frame) {
+    pthread_mutex_lock(&s_sub_pool_lock);
+    if (s_frame_pool_count < SUB_POOL_MAX_FRAMES) {
+        s_frame_pool[s_frame_pool_count++] = frame;
+        frame = NULL;
+    }
+    pthread_mutex_unlock(&s_sub_pool_lock);
+    if (frame) free(frame);
+}
+
+static void sub_event_pool_release(SUB_EVENT *ev) {
+    pthread_mutex_lock(&s_sub_pool_lock);
+    if (s_event_pool_count < SUB_POOL_MAX_EVENTS) {
+        s_event_pool[s_event_pool_count++] = ev;
+        ev = NULL;
+    }
+    pthread_mutex_unlock(&s_sub_pool_lock);
+    if (ev) free(ev);
+}
+
 void sub_frame_ref(SUB_FRAME *frame) {
     if (frame) {
         atomic_fetch_add(&frame->refcount, 1);
@@ -566,13 +669,15 @@ void sub_frame_unref(SUB_FRAME *frame) {
         SUB_EVENT *ev = frame->events;
         while (ev) {
             SUB_EVENT *next = ev->next;
+            // The bitmap payload buffer is never pooled (see doc comment
+            // above) -- always a plain free(), same as before.
             if (ev->kind == SUB_EVENT_BITMAP && ev->data.bitmap.pixels) {
                 free((void*)ev->data.bitmap.pixels);
             }
-            free(ev);
+            sub_event_pool_release(ev);
             ev = next;
         }
-        free(frame);
+        sub_frame_pool_release(frame);
     }
 }
 

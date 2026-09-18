@@ -33,7 +33,14 @@ static int gfx_open(SUB_FORMAT_BACKEND *be, const SUB_FORMAT_OPEN_PARAMS *params
 // Colorspace:
 //   codec_ffsub always produces AV_IMAGE_BGRA_32 (confirmed by the
 //   av_image_alloc(AV_PIX_FMT_BGRA) call and frame->colorspace assignment).
-//   The GL renderer expects RGBA. We swizzle R<->B during the pixel copy.
+//   Phase 3: rather than swizzling every pixel to RGBA here on the CPU, we
+//   hand the decoder's BGRA bytes straight through (tagged
+//   SUB_BITMAP_BGRA8) and let the renderer decide how to consume them --
+//   on a device with GL_EXT_texture_format_BGRA8888 that's a direct
+//   texture upload with no CPU work at all; on one without it, the
+//   renderer does the one-time swizzle itself right before upload instead
+//   of it happening unconditionally here regardless of device support.
+//   See sub_types.h's SUB_BITMAP_BGRA8 doc comment for the full contract.
 // ---------------------------------------------------------------------------
 static int gfx_feed_bitmap(SUB_FORMAT_BACKEND *be,
                            uint8_t *pixels,
@@ -62,7 +69,7 @@ static int gfx_feed_bitmap(SUB_FORMAT_BACKEND *be,
     ctx->is_dirty = 1;
 
     // Build the stored frame
-    SUB_FRAME *frame  = calloc(1, sizeof(SUB_FRAME));
+    SUB_FRAME *frame  = sub_frame_pool_alloc();
     atomic_init(&frame->refcount, 1);
 
     frame->pts_ms      = pts_ms;
@@ -70,40 +77,28 @@ static int gfx_feed_bitmap(SUB_FORMAT_BACKEND *be,
     frame->video_w     = ctx->video_w;
     frame->video_h     = ctx->video_h;
 
-    SUB_EVENT *ev = calloc(1, sizeof(SUB_EVENT));
+    SUB_EVENT *ev = sub_event_pool_alloc();
     ev->kind             = SUB_EVENT_BITMAP;
     ev->x                = x_offset;
     ev->y                = y_offset;
     ev->w                = width;
     ev->h                = height;
-    ev->data.bitmap.format = SUB_BITMAP_RGBA8;
-    ev->data.bitmap.stride = width * 4; // always RGBA after swizzle
-
-    uint8_t *rgba = malloc(width * height * 4);
-    ev->data.bitmap.pixels = rgba;
 
     const int is_bgra = (colorspace == AV_IMAGE_BGRA_32);
+    ev->data.bitmap.format = is_bgra ? SUB_BITMAP_BGRA8 : SUB_BITMAP_RGBA8;
+    ev->data.bitmap.stride = width * 4; // always tightly packed after the copy below
+
+    // No per-pixel channel work either way now -- just a row-by-row copy
+    // to strip the source pitch down to a tight stride (pitch may be wider
+    // than width*4). The old per-pixel loop only existed to do the BGRA
+    // swap; that's now the renderer's job (see doc comment above).
+    uint8_t *dst_pixels = malloc((size_t)width * height * 4);
+    ev->data.bitmap.pixels = dst_pixels;
 
     for (int row = 0; row < height; row++) {
-        const uint8_t *src = pixels + row * pitch;
-        uint8_t       *dst = rgba   + row * (width * 4);
-        for (int col = 0; col < width; col++) {
-            if (is_bgra) {
-                // BGRA -> RGBA: swap B(src[0]) and R(src[2])
-                dst[0] = src[2]; // R
-                dst[1] = src[1]; // G
-                dst[2] = src[0]; // B
-                dst[3] = src[3]; // A
-            } else {
-                // Already RGBA, just copy
-                dst[0] = src[0];
-                dst[1] = src[1];
-                dst[2] = src[2];
-                dst[3] = src[3];
-            }
-            src += 4;
-            dst += 4;
-        }
+        memcpy(dst_pixels + (size_t)row * (width * 4),
+               pixels + (size_t)row * pitch,
+               (size_t)width * 4);
     }
 
     frame->events      = ev;
@@ -137,7 +132,7 @@ static SUB_FRAME *gfx_render_at(SUB_FORMAT_BACKEND *be, int64_t pts_ms) {
     ctx->is_dirty = 0;
     // 2. If it changed to a CLEAR state, return an empty frame to wipe the screen
     if (ctx->is_cleared || !ctx->current_frame) {
-        SUB_FRAME *empty_frame = calloc(1, sizeof(SUB_FRAME));
+        SUB_FRAME *empty_frame = sub_frame_pool_alloc();
         atomic_init(&empty_frame->refcount, 1);
         return empty_frame; // No events attached = clear screen
     }

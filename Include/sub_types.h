@@ -71,10 +71,28 @@ typedef enum {
  *                         one color per image, and expanding that to RGBA
  *                         before it reaches the GPU just re-does work
  *                         libass already did the hard part of.
+ *   SUB_BITMAP_BGRA8   — codec_ffsub's native BGRA byte order, w*h*4 bytes,
+ *                         color already baked into the pixels (same as
+ *                         RGBA8, just B/R swapped in memory). Used by
+ *                         sub_format_gfx.c when it can skip the CPU
+ *                         BGRA->RGBA swizzle entirely: on a device that
+ *                         supports GL_EXT_texture_format_BGRA8888, the GPU
+ *                         samples this layout correctly with no shader
+ *                         changes, so the format backend just hands the
+ *                         decoder's bytes through untouched. The renderer
+ *                         decides per-device (see sub_render_gl.c's
+ *                         has_bgra_ext) whether to upload it directly or
+ *                         fall back to a one-time CPU swizzle; either way,
+ *                         anything reading these pixels directly (the CPU
+ *                         3D-bridge blend in sub_render_gl_fill_bitmap())
+ *                         must swap R/B itself, same as the GL fallback
+ *                         does -- this format is never silently equivalent
+ *                         to RGBA8 to a consumer that doesn't check for it.
  */
 typedef enum {
     SUB_BITMAP_RGBA8   = 0,
     SUB_BITMAP_MASK_R8 = 1,
+    SUB_BITMAP_BGRA8   = 2,
 } SUB_BITMAP_FORMAT;
 
 typedef struct SUB_EVENT {
@@ -92,13 +110,14 @@ typedef struct SUB_EVENT {
 
         struct {
             SUB_BITMAP_FORMAT format;  /* which payload shape this event carries */
-            const uint8_t    *pixels;  /* RGBA8: tightly packed w*h*4 bytes.
+            const uint8_t    *pixels;  /* RGBA8/BGRA8: tightly packed w*h*4 bytes
+                                         * (channel order per `format`).
                                          * MASK_R8: tightly packed w*h*1 coverage bytes. */
             int               stride;  /* bytes per row (may be > w*bpp)    */
             SUB_COLOR         color;   /* MASK_R8 only — RGB + alpha to tint
                                          * the mask with. Unused/zeroed for
-                                         * RGBA8, where color already lives
-                                         * in the pixels themselves.        */
+                                         * RGBA8/BGRA8, where color already
+                                         * lives in the pixels themselves.  */
             /* Ownership: the event owns this buffer and frees it in
              * sub_frame_unref() (sub_engine.c). The renderer/CPU bridge may
              * hold a ref on the whole SUB_FRAME (sub_frame_ref()) for as
