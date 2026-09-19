@@ -85,10 +85,30 @@ static int _open( STREAM_DEC_SUB *dec, SUB_PROPERTIES *sub, void *ctx )
 		int w = 1920;
 		int h = 1080;
 		STREAM *stream = (STREAM *)ctx;
-		if (stream && stream->video) {
-			if (stream->video->width > 0) w = stream->video->width;
-			if (stream->video->height > 0) h = stream->video->height;
+		// Must mirror _decode()'s own per-format reference-size logic below exactly --
+		// this value becomes real_video_w/h (the space PGS/VobSub bitmap x/y/w/h are
+		// assumed to be relative to), and _decode() is what actually produces those
+		// coordinates, so the two must agree on what space they're in.
+		if (sub->format == SUB_FORMAT_DVD_GFX) {
+			// VobSub has no canvas of its own -- its coordinates are always relative to
+			// the DVD video's own real resolution (matches _decode()'s
+			// SUB_FORMAT_DVD_GFX branch, base_width/base_height defaulting 720x576).
+			w = 720;
+			h = 576;
+			if (stream && stream->video) {
+				if (stream->video->width > 0) w = stream->video->width;
+				if (stream->video->height > 0) h = stream->video->height;
+			}
 		}
+		// else: SUB_FORMAT_PGS keeps the 1920x1080 default above, unconditionally --
+		// PGS bitmap coordinates are relative to the Presentation Graphics plane's own
+		// resolution, fixed by the BD-ROM spec (virtually always 1920x1080) and
+		// independent of the actual encoded video's resolution. These can genuinely
+		// differ -- e.g. a video with its letterbox bars physically cropped out of the
+		// encode (video_h < 1080) while the PGS plane keeps its original 1080-tall
+		// canvas -- and using the video's own dimensions here instead, as this branch
+		// used to unconditionally do, put real_video_w/h in the wrong coordinate space
+		// for exactly that (fairly common) case, silently offsetting every PGS bitmap.
 		sub_engine_open_track((SUB_ENGINE*)stream->sub_engine, sub_fmt_from_format(sub->format), w, h, NULL, 0, NULL, 0, NULL);
 		// GFX/bitmap track (PGS/VobSub), opened synchronously here off the codec's own open() call --
 		// fed via sub_engine_feed_bitmap(), not the checkpointed _gen() token system, so there's no
