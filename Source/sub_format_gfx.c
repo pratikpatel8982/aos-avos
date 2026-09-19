@@ -7,6 +7,8 @@ typedef struct {
     SUB_FRAME *current_frame; // owned here — never freed by the GL renderer
     int        is_cleared;    // 1 = no subtitle currently visible (PGS clear signal received)
     int        is_dirty;
+    int        delivered;     // 1 = current_frame has already been handed to the renderer (which
+                              // now holds its own ref). Reset whenever current_frame is replaced.
     int        canvas_w, canvas_h;           // on-screen GL surface size. NOT the space
                                               // ev->x/y/w/h are expressed in -- see below.
     int        real_video_w, real_video_h;   // decoded video's own coded size -- fixed for
@@ -67,6 +69,7 @@ static int gfx_feed_bitmap(SUB_FORMAT_BACKEND *be,
         sub_frame_unref(ctx->current_frame);
         ctx->current_frame = NULL;
     }
+    ctx->delivered = 0;
 
     // PGS clear signal: codec_ffsub sends a 1x1 zero-rect frame with
     // duration=0 to signal "hide the current subtitle". Honour it.
@@ -151,6 +154,45 @@ static int gfx_feed_bitmap(SUB_FORMAT_BACKEND *be,
 // in gfx_feed_bitmap above.  VobSub does have durations but they are also
 // unreliable — keeping it simple: show until cleared.
 // ---------------------------------------------------------------------------
+// True if the cached frame's baked-in geometry no longer matches what the backend
+// currently knows (canvas size / video box).
+static int gfx_geometry_stale(const GFX_BACKEND *ctx, const SUB_FRAME *f) {
+    return f->video_w     != ctx->canvas_w     || f->video_h     != ctx->canvas_h     ||
+           f->video_box_x != ctx->video_box_x  || f->video_box_y != ctx->video_box_y  ||
+           f->video_box_w != ctx->video_box_w  || f->video_box_h != ctx->video_box_h;
+}
+
+// Copy-on-write: build a brand-new frame (own pixel buffer) stamped with the CURRENT
+// geometry. The old frame is never mutated -- the render thread reads its fields without
+// eng->lock, so in-place edits would be a data race and would also leave the frame's
+// pointer unchanged, which the renderer treats as "nothing new, don't redraw".
+// gfx_feed_bitmap only ever builds a single-event frame, so cloning one event is enough.
+static SUB_FRAME *gfx_clone_with_geometry(const GFX_BACKEND *ctx, const SUB_FRAME *src) {
+    const SUB_EVENT *sev = src->events;
+    if (!sev || !sev->data.bitmap.rgba) return NULL;
+
+    SUB_FRAME *f  = calloc(1, sizeof(SUB_FRAME));
+    SUB_EVENT *ev = calloc(1, sizeof(SUB_EVENT));
+    size_t     n  = (size_t)sev->h * (size_t)sev->data.bitmap.stride;
+    uint8_t   *px = malloc(n);
+    if (!f || !ev || !px) { free(f); free(ev); free(px); return NULL; }
+
+    atomic_init(&f->refcount, 1);
+    f->pts_ms       = src->pts_ms;
+    f->duration_ms  = src->duration_ms;
+    f->video_w      = ctx->canvas_w;       f->video_h      = ctx->canvas_h;
+    f->real_video_w = ctx->real_video_w;   f->real_video_h = ctx->real_video_h;
+    f->video_box_x  = ctx->video_box_x;    f->video_box_y  = ctx->video_box_y;
+    f->video_box_w  = ctx->video_box_w;    f->video_box_h  = ctx->video_box_h;
+
+    *ev = *sev;                       // kind, x, y, w, h, stride
+    ev->next = NULL;
+    memcpy(px, sev->data.bitmap.rgba, n);
+    ev->data.bitmap.rgba = px;
+    f->events = ev;
+    return f;
+}
+
 static SUB_FRAME *gfx_render_at(SUB_FORMAT_BACKEND *be, int64_t pts_ms) {
     GFX_BACKEND *ctx = (GFX_BACKEND *)be->priv;
 
@@ -165,8 +207,28 @@ static SUB_FRAME *gfx_render_at(SUB_FORMAT_BACKEND *be, int64_t pts_ms) {
         return empty_frame; // No events attached = clear screen
     }
 
-    sub_frame_ref(ctx->current_frame);
-    return ctx->current_frame;
+    // 3. Geometry changed since this bitmap was decoded (rotation, floating window,
+    //    margins toggle, ...): swap in a re-stamped copy. The renderer keeps its own ref
+    //    to the old frame, untouched, so this is race-free, and the pointer difference is
+    //    what makes the renderer redraw and bump frame_generation.
+    SUB_FRAME *cf = ctx->current_frame;
+    if (gfx_geometry_stale(ctx, cf)) {
+        SUB_FRAME *fresh = gfx_clone_with_geometry(ctx, cf);
+        if (fresh) {
+            sub_frame_unref(cf);
+            ctx->current_frame = cf = fresh;
+            ctx->delivered = 0;
+        }
+    }
+
+    // 4. Renderer already holds this exact frame and nothing about it changed (e.g. a
+    //    redundant set_video_box). Returning it again would hand out a ref the renderer
+    //    never releases (it only unrefs on a pointer swap) -- so return NULL instead.
+    if (ctx->delivered) return NULL;
+
+    ctx->delivered = 1;
+    sub_frame_ref(cf);
+    return cf;
 }
 
 // ---------------------------------------------------------------------------
@@ -225,6 +287,7 @@ static int gfx_flush(SUB_FORMAT_BACKEND *be) {
         ctx->current_frame = NULL;
     }
     ctx->is_cleared = 1;
+    ctx->delivered = 0;
     ctx->is_dirty = 1;
     return 0;
 }
