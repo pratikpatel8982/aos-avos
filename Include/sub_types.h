@@ -80,13 +80,26 @@ typedef struct SUB_EVENT {
         struct {
             const uint8_t *rgba;     /* tightly packed, w*h*4 bytes        */
             int             stride;   /* bytes per row (may be > w*4)      */
-            /* Ownership: renderer uploads synchronously and does not
-             * retain this pointer past the call to sub_engine_submit_frame(). */
+            /* Ownership: the event owns these pixels and sub_frame_unref() frees
+             * them with it -- either with a plain free(rgba) (pixel_refs == NULL,
+             * e.g. SSA/SRT), or, when pixel_refs is set, by dropping one reference on
+             * the shared block rgba lives in (see pixel_refs below). The renderer only
+             * reads them. */
         } bitmap;
     } data;
 
     struct SUB_EVENT *next;  /* multiple simultaneous events per frame (e.g.
                                * top+bottom lines, or multi-region VOBSUB) */
+
+    /* Optional shared ownership of a bitmap event's pixels (kind == SUB_EVENT_BITMAP).
+     * NULL (the default -- events are calloc'd) means the event solely owns a plain
+     * malloc'd data.bitmap.rgba. When non-NULL, data.bitmap.rgba points INTO a block that
+     * several events/frames may share, and pixel_refs is BOTH that block's refcount AND
+     * its malloc base address: sub_frame_unref() drops one reference and free()s
+     * pixel_refs when the last one goes. The pixels are immutable once published, so
+     * sharing across frames/threads is safe. Currently only sub_format_gfx.c uses this
+     * (lets it re-stamp a cached bitmap under new geometry without copying it). */
+    atomic_int *pixel_refs;
 } SUB_EVENT;
 
 /* ------------------------------------------------------------------

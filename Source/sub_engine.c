@@ -614,8 +614,13 @@ void sub_frame_unref(SUB_FRAME *frame) {
         SUB_EVENT *ev = frame->events;
         while (ev) {
             SUB_EVENT *next = ev->next;
-            if (ev->kind == SUB_EVENT_BITMAP && ev->data.bitmap.rgba) {
-                free((void*)ev->data.bitmap.rgba);
+            if (ev->pixel_refs) {
+                // Shared pixel block (see sub_format_gfx.c): rgba points INTO it, and
+                // pixel_refs is both its refcount and its malloc base. Drop this event's
+                // reference; whoever drops the last one frees the whole block.
+                if (atomic_fetch_sub(ev->pixel_refs, 1) == 1) free(ev->pixel_refs);
+            } else if (ev->kind == SUB_EVENT_BITMAP && ev->data.bitmap.rgba) {
+                free((void*)ev->data.bitmap.rgba);   // legacy: event owns a plain malloc
             }
             free(ev);
             ev = next;

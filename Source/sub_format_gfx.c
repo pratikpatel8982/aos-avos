@@ -22,6 +22,35 @@ typedef struct {
 } GFX_BACKEND;
 
 // ---------------------------------------------------------------------------
+// Shared pixel blocks
+//
+// A bitmap's pixels live in ONE malloc block laid out as [ atomic_int refs | pad | pixels ].
+// SUB_EVENT::pixel_refs points at the counter, which is also the block's malloc base, and
+// SUB_EVENT::data.bitmap.rgba points at the pixels inside it. sub_frame_unref() (sub_engine.c)
+// only needs to know that: when pixel_refs is set it drops one reference and free()s
+// pixel_refs when the last one goes -- the layout itself is private to this file.
+//
+// The pixels are never written once gfx_feed_bitmap() has finished filling them, so several
+// frames (and threads) can safely share one block; only the counter changes, atomically.
+// This is what lets gfx_clone_with_geometry() be O(1) instead of a bitmap-sized memcpy
+// under eng->lock.
+// ---------------------------------------------------------------------------
+#define GFX_PIXEL_HDR 8   // counter + padding; keeps the pixels 8-byte aligned
+_Static_assert(sizeof(atomic_int) <= GFX_PIXEL_HDR, "GFX_PIXEL_HDR too small for atomic_int");
+
+// Allocates header + n bytes. Returns the pixel pointer (uninitialised) and stores the
+// counter (refcount = 1) in *refs_out. NULL on failure.
+static uint8_t *gfx_pixels_alloc(size_t n, atomic_int **refs_out) {
+    if (n > SIZE_MAX - GFX_PIXEL_HDR) return NULL;
+    uint8_t *block = (uint8_t *)malloc(GFX_PIXEL_HDR + n);
+    if (!block) return NULL;
+    atomic_int *refs = (atomic_int *)block;
+    atomic_init(refs, 1);
+    *refs_out = refs;
+    return block + GFX_PIXEL_HDR;
+}
+
+// ---------------------------------------------------------------------------
 // gfx_open
 // ---------------------------------------------------------------------------
 static int gfx_open(SUB_FORMAT_BACKEND *be, const SUB_FORMAT_OPEN_PARAMS *params) {
@@ -79,6 +108,16 @@ static int gfx_feed_bitmap(SUB_FORMAT_BACKEND *be,
         return 0;
     }
 
+    // Pixels first, so an allocation failure leaves the backend in a clean "nothing shown"
+    // state instead of half-built.
+    atomic_int *pixel_refs = NULL;
+    uint8_t *rgba = gfx_pixels_alloc((size_t)width * (size_t)height * 4, &pixel_refs);
+    if (!rgba) {
+        ctx->is_cleared = 1;
+        ctx->is_dirty = 1;
+        return -1;
+    }
+
     ctx->is_cleared = 0;
     ctx->is_dirty = 1;
 
@@ -105,8 +144,8 @@ static int gfx_feed_bitmap(SUB_FORMAT_BACKEND *be,
     ev->h                = height;
     ev->data.bitmap.stride = width * 4; // always RGBA after swizzle
 
-    uint8_t *rgba = malloc(width * height * 4);
     ev->data.bitmap.rgba = rgba;
+    ev->pixel_refs       = pixel_refs;   // event owns the single initial reference
 
     const int is_bgra = (colorspace == AV_IMAGE_BGRA_32);
 
@@ -162,20 +201,23 @@ static int gfx_geometry_stale(const GFX_BACKEND *ctx, const SUB_FRAME *f) {
            f->video_box_w != ctx->video_box_w  || f->video_box_h != ctx->video_box_h;
 }
 
-// Copy-on-write: build a brand-new frame (own pixel buffer) stamped with the CURRENT
-// geometry. The old frame is never mutated -- the render thread reads its fields without
-// eng->lock, so in-place edits would be a data race and would also leave the frame's
-// pointer unchanged, which the renderer treats as "nothing new, don't redraw".
+// Copy-on-write: build a brand-new frame stamped with the CURRENT geometry. The old frame
+// is never mutated -- the render thread reads its fields without eng->lock, so in-place
+// edits would be a data race and would also leave the frame's pointer unchanged, which the
+// renderer treats as "nothing new, don't redraw".
+//
+// The pixels are NOT copied: the clone takes a reference on the same immutable pixel block,
+// so this is two small callocs and an atomic increment even for a full-screen bitmap.
+// (render_at runs with eng->lock held, so this matters -- a memcpy here would stall
+// feed/resize/set_video_box during e.g. a floating-window drag-resize.)
 // gfx_feed_bitmap only ever builds a single-event frame, so cloning one event is enough.
 static SUB_FRAME *gfx_clone_with_geometry(const GFX_BACKEND *ctx, const SUB_FRAME *src) {
     const SUB_EVENT *sev = src->events;
-    if (!sev || !sev->data.bitmap.rgba) return NULL;
+    if (!sev || !sev->pixel_refs) return NULL;   // not built by gfx_feed_bitmap -- leave it alone
 
     SUB_FRAME *f  = calloc(1, sizeof(SUB_FRAME));
     SUB_EVENT *ev = calloc(1, sizeof(SUB_EVENT));
-    size_t     n  = (size_t)sev->h * (size_t)sev->data.bitmap.stride;
-    uint8_t   *px = malloc(n);
-    if (!f || !ev || !px) { free(f); free(ev); free(px); return NULL; }
+    if (!f || !ev) { free(f); free(ev); return NULL; }
 
     atomic_init(&f->refcount, 1);
     f->pts_ms       = src->pts_ms;
@@ -185,10 +227,9 @@ static SUB_FRAME *gfx_clone_with_geometry(const GFX_BACKEND *ctx, const SUB_FRAM
     f->video_box_x  = ctx->video_box_x;    f->video_box_y  = ctx->video_box_y;
     f->video_box_w  = ctx->video_box_w;    f->video_box_h  = ctx->video_box_h;
 
-    *ev = *sev;                       // kind, x, y, w, h, stride
+    *ev = *sev;                       // kind, x, y, w, h, stride, rgba ptr, pixel_refs
     ev->next = NULL;
-    memcpy(px, sev->data.bitmap.rgba, n);
-    ev->data.bitmap.rgba = px;
+    atomic_fetch_add(ev->pixel_refs, 1);        // shared, immutable pixels
     f->events = ev;
     return f;
 }
