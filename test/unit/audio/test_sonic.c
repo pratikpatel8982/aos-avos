@@ -222,6 +222,38 @@ TEST(unsigned_char_samples_are_recentred_and_shifted_to_16_bit)
     sonicDestroyStream(s);
 }
 
+TEST(partial_unsigned_char_read_keeps_the_rest_in_order)
+{
+    sonicStream s = sonicCreateStream(8000, 1);
+    const unsigned char in[6] = { 128, 255, 0, 192, 64, 100 };
+    unsigned char a[2], b[4], c[4];
+    REQUIRE_NOT_NULL(s);
+    REQUIRE(sonicWriteUnsignedCharToStream(s, in, 6) == 1);
+    CHECK_EQ_INT(sonicSamplesAvailable(s), 6);
+    CHECK_EQ_INT(sonicReadUnsignedCharFromStream(s, a, 2), 2);   /* fewer than available */
+    CHECK_EQ_MEM(a, in, 2);
+    CHECK_EQ_INT(sonicSamplesAvailable(s), 4);                   /* the other 4 were not lost */
+    CHECK_EQ_INT(sonicReadUnsignedCharFromStream(s, b, 4), 4);
+    CHECK_EQ_MEM(b, in + 2, 4);                                  /* ...and are still in order */
+    CHECK_EQ_INT(sonicReadUnsignedCharFromStream(s, c, 4), 0);   /* now empty */
+    sonicDestroyStream(s);
+}
+
+TEST(partial_unsigned_char_read_moves_whole_stereo_frames)
+{
+    sonicStream s = sonicCreateStream(8000, 2);
+    const unsigned char in[8] = { 10, 20, 30, 40, 50, 60, 70, 80 };   /* 4 frames, L/R interleaved */
+    unsigned char a[2], rest[6];
+    REQUIRE_NOT_NULL(s);
+    REQUIRE(sonicWriteUnsignedCharToStream(s, in, 4) == 1);
+    CHECK_EQ_INT(sonicReadUnsignedCharFromStream(s, a, 1), 1);        /* ONE frame = two values */
+    CHECK_EQ_MEM(a, in, 2);
+    CHECK_EQ_INT(sonicSamplesAvailable(s), 3);
+    CHECK_EQ_INT(sonicReadUnsignedCharFromStream(s, rest, 3), 3);
+    CHECK_EQ_MEM(rest, in + 2, 6);                                    /* remaining frames not shifted by a sample */
+    sonicDestroyStream(s);
+}
+
 TEST(stereo_frames_stay_interleaved_through_every_format)
 {
     sonicStream s = sonicCreateStream(8000, 2);
@@ -904,5 +936,14 @@ TEST(output_buffer_growth_failure_is_reported_for_slow_down_and_rate_change)
 }
 
 /*
- * UNREACHABLE on host: (filled in after measurement)
+ * UNREACHABLE on host (sonic.c, 18 of 580 lines uncovered; all are failure returns or dead code):
+ *
+ *   403-404, 427, 583, 595, 708, 715, 929, 1005, 1008, 1015, 1050, 1095, 1121, 1182, 1187
+ *       `return 0` / `return NULL` after a malloc/realloc inside sonicCreateStream, the enlarge*Buffer
+ *       helpers and the process* routines. The allocation-failure tests above drive real out-of-memory
+ *       through RLIMIT_AS, but which of ~15 allocation sites fails first depends on the allocator and
+ *       cannot be steered to each one without replacing malloc (i.e. faking the environment).
+ *   818-819
+ *       prevPeriodBetter(): the `preferNewPeriod == 0` branch. Its only caller (findPitchPeriod at
+ *       sonic.c:1127) always passes 1, so this branch is dead code in production.
  */
