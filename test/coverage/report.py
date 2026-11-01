@@ -44,6 +44,7 @@ def module_of(path):
 
 def run_gcovr(root, data_dirs, html):
     cmd = ['gcovr', '--root', str(root), '--filter', r'Source/.*\.c$', '--gcov-ignore-parse-errors=negative_hits.warn_once_per_file',
+           '--gcov-ignore-parse-errors=suspicious_hits.warn_once_per_file',
            '--exclude-throw-branches', '--exclude-unreachable-branches',
            '--json', '-']
     for d in data_dirs:
@@ -51,7 +52,10 @@ def run_gcovr(root, data_dirs, html):
     if html:
         Path(html).mkdir(parents=True, exist_ok=True)
         cmd += ['--html-details', str(Path(html) / 'index.html')]
-    out = subprocess.run(cmd, check=True, text=True, capture_output=True).stdout
+    done = subprocess.run(cmd, text=True, capture_output=True)
+    if done.returncode:
+        sys.exit('gcovr failed (exit %d):\n%s' % (done.returncode, done.stderr.strip()[-1500:]))
+    out = done.stdout
     return json.loads(out)
 
 
