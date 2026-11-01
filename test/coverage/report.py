@@ -44,7 +44,7 @@ def module_of(path):
 
 def run_gcovr(root, data_dirs, html):
     cmd = ['gcovr', '--root', str(root), '--filter', r'Source/.*\.c$', '--gcov-ignore-parse-errors=negative_hits.warn_once_per_file',
-           '--gcov-ignore-parse-errors=suspicious_hits.warn_once_per_file',
+           '--gcov-suspicious-hits-threshold=4611686018427387904',   # keep huge DSP-loop counts, don't zero them
            '--exclude-throw-branches', '--exclude-unreachable-branches',
            '--json', '-']
     for d in data_dirs:
