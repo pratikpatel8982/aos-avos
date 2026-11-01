@@ -49,6 +49,10 @@ def build(source):
     rel = source.resolve().relative_to(TEST_DIR)
     out = COV_DIR / 'tests' / rel.with_suffix('')
     out.parent.mkdir(parents=True, exist_ok=True)
+    # A rebuilt test gets new .gcno notes; gcov rejects them next to the old run's .gcda (stamp mismatch)
+    # and the whole report fails. Drop this test's own stale coverage files before compiling.
+    for stale in out.parent.glob(out.name + '-*.gc*'):
+        stale.unlink()
     cmd = [os.environ.get('REAL_CC', 'gcc'), *flags['cflags'],
            '-O0', '-g', '--coverage', '-fprofile-update=atomic', '-ffunction-sections', '-fdata-sections',
            '-Wno-error', '-I' + str(TEST_DIR / 'support'), '-I' + str(REPO_ROOT),
