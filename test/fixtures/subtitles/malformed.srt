@@ -1,0 +1,15 @@
+1
+00:00:01,000 --> 00:00:00,500
+end before start
+
+X
+not a time line
+text
+
+3
+00:00:03,000 --> 00:00:04,000
+survivor
+
+4
+00:00:05,000 -->
+no end time

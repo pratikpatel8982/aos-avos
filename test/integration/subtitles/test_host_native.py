@@ -271,13 +271,22 @@ def _run_env(libass):
 _CHECK_LINE = re.compile(r'^\s*(ok|FAIL)\b')
 
 
+COVERAGE = os.environ.get('COVERAGE') == '1'     # gcov: keep objects + .gcno/.gcda under build-cov/ for the report
+
+
 def setUpModule():
     global _BUILD
-    _BUILD = Path(tempfile.mkdtemp(prefix='avos-host.'))
+    if COVERAGE:
+        _BUILD = Path(os.environ.get('COV_DIR') or REPO / 'build-cov') / 'integration' / 'subtitles'
+        shutil.rmtree(_BUILD, ignore_errors=True)    # stale objects/notes from an older source revision
+        _BUILD.mkdir(parents=True)
+    else:
+        _BUILD = Path(tempfile.mkdtemp(prefix='avos-host.'))
 
 
 def tearDownModule():
-    shutil.rmtree(_BUILD, ignore_errors=True)
+    if not COVERAGE:
+        shutil.rmtree(_BUILD, ignore_errors=True)
 
 
 _BASELINES = {}
@@ -303,7 +312,10 @@ def _baseline_tree(rev):
 
 def _sanitize_flags():
     sanitizers = os.environ.get('SANITIZERS') or 'undefined'
-    return [] if sanitizers == 'none' else ['-fsanitize=' + sanitizers, '-fno-omit-frame-pointer']
+    flags = [] if sanitizers == 'none' else ['-fsanitize=' + sanitizers, '-fno-omit-frame-pointer']
+    if COVERAGE:                                     # -O0 last so it beats the -O1 in the base flags
+        flags += ['--coverage', '-O0', '-fprofile-update=atomic']
+    return flags
 
 
 def _pkg_config(flag, pkgs):

@@ -1,0 +1,33 @@
+# Source files excluded from the coverage percentage, and why.
+# Format: <path relative to repo root> | <category> | <reason>
+# Consumed by coverage/report.py and by `make -C test coverage-report`.
+#
+# Categories
+#   i18n     data tables, excluded by project decision (tested separately by round-trip checks)
+#   android  cannot be compiled on a Linux/macOS host at all (verified with gcc -fsyntax-only
+#            using the sim target's exact flags); covered only by the extract-and-replay tests
+#            in test/replay/, which recompile production functions but cannot be gcov-measured
+Source/i18n_932.c | i18n | Shift-JIS code page table
+Source/i18n_936.c | i18n | GBK code page table
+Source/i18n_949.c | i18n | UHC (Korean) code page table
+Source/i18n_950.c | i18n | Big5 code page table
+Source/android_codecs.c | android | JNINativeInterface_ members not provided by the host JNI shim
+Source/android_config.c | android | needs android_buffer.h (NDK AHardwareBuffer headers)
+Source/audio_interface_alsa.c | android | conflicts with the sim audio_interface_* API; ALSA target only
+Source/audio_interface_audiotrack_java.c | android | JNI jbyteArray / AudioTrack Java bridge
+Source/audio_interface_opensles.c | android | needs SLES/OpenSLES.h
+Source/audio_interface_tinyalsa.c | android | needs tinyalsa/asoundlib.h
+Source/avos_common.c | android | JNI entry point layer (avos_common.h is in public/, Android build only)
+Source/avos_mp.c | android | JNI media-player entry points
+Source/avos_mp_audio.c | android | JNI media-player audio entry points
+Source/avos_mp_video.c | android | JNI media-player video entry points
+Source/avos_mr.c | android | JNI media-retriever entry points
+Source/codec_mediacodec_audio.c | android | Android MediaCodec audio decoder
+Source/codec_sfdec2.c | android | Android stagefright/MediaCodec video decoder
+Source/jni_font_name_parser.c | android | JNI jobjectArray API
+Source/log_android.c | android | needs cpu-features.h (NDK)
+Source/stream_filter_audio_dummy.c | android | does not build against the sim headers (afree)
+Source/stream_sink_video_android.c | android | Android surface sink
+Source/stream_sink_video_android2.c | android | Android surface sink
+Source/stream_sink_video_android3.c | android | Android surface sink
+Source/subtitle.c | android | needs videoplayer_screen.h (not in this repository)
