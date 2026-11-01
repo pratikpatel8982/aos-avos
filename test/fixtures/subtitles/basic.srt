@@ -1,0 +1,12 @@
+1
+00:00:00,500 --> 00:00:01,500
+Hello, <i>world</i>
+
+2
+00:00:02,000 --> 00:00:03,000
+Second line
+wraps here
+
+3
+00:00:04,000 --> 00:00:05,250
+<b>Bold</b> and <font color="#ff0000">red</font>

@@ -6,12 +6,16 @@ Environment understood by the whole suite:
                     AV_CHAN_SIDE_SURROUND_* constants). Exported to pkg-config and the dynamic
                     loader for every test, so tests never need PKG_CONFIG_PATH / LD_LIBRARY_PATH.
     CC              C compiler used by tests that compile C (default: cc)
+    COVERAGE        1 -> the C unit tests build with gcov instrumentation (see unit/README.md)
 """
 import os
 import shutil
 from pathlib import Path
 
 import pytest
+
+pytest_plugins = ['c_tests']      # C unit tests: every TEST() in unit/**/test_*.c is a pytest item
+
 
 def _prepend(var, path):
     current = os.environ.get(var, '')
