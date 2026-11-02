@@ -75,6 +75,10 @@ TEST(append_keeps_order) {
   and flush gcov counters before it dies.
 * `fixture_path("media/h264_aac.mp4")` gives the absolute path of a fixture.
 * Commas inside a macro argument (e.g. a compound literal `(int[]){1,2}`) split it; name the array.
+* **Known production defects** are never hidden and never fixed from the test side: they live in a test
+  named `known_defect_<what>` whose comment states the correct result next to the pinned (wrong) one.
+  The test passes today and fails the moment the production code is fixed, which is the cue to flip the
+  expectation and drop the prefix. `grep -rn known_defect test/unit` lists every open one.
 * Assertions must be able to fail. Do not write `x == y || 1`, or checks of values the code just
   assigned from the same expression. Assert **observable behaviour**: return values, resulting
   state, bytes produced, ordering, error codes.
