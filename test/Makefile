@@ -1,35 +1,66 @@
-# Copyright 2017 Archos SA
+# AVOS test suite entry point.   make -C test help
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+#   FFMPEG_PREFIX   install prefix of FFmpeg >= 7.1 (CI uses conda-forge ffmpeg 9)
+#   CC              compiler for the replay/integration tests (default cc)
+#   JOBS            parallel jobs for building the instrumented library
 #
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Layout (see README.md):  unit/  replay/  integration/  tooling/  device/  support/  tools/
 
-#
-# test stuff
-#
-CC = gcc -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64 -D_GNU_SOURCE -g -I.
+REPO      := $(abspath ..)
+HERE      := $(abspath .)
+FFMPEG_PREFIX ?= /
+JOBS      ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)
+COV_DIR   ?= $(REPO)/build-cov
+COV_LIB   := $(COV_DIR)/libavos_cov.a
+PYTEST    ?= python3 -m pytest
+export FFMPEG_PREFIX
 
-ALL = ff comp stream_url
+# `make test` in the repo root runs this.
+.PHONY: all help check unit replay integration tooling subtitles coverage-lib coverage coverage-report coverage-clean legacy clean
+all: check
 
-# targets
-all:	$(ALL)
+help:
+	@echo "check            run every automated test (unit, replay, integration, tooling)"
+	@echo "unit|replay|integration|tooling   one test type"
+	@echo "subtitles        native subtitle host harness (sanitizers via SANITIZERS=)"
+	@echo "coverage         run everything instrumented and print the gcov summary"
+	@echo "coverage-report  re-render the report from existing .gcda data"
+	@echo "legacy           build the manual utilities in tools/legacy"
 
-comp:	comp.c ../Source/pcm_autogain.c ../Source/stream_filter_audio_agc.c
-	$(CC) -I../Include -g -o comp comp.c
+check:
+	$(PYTEST) $(HERE) --ignore=$(HERE)/integration/subtitles
+	$(MAKE) subtitles
 
-ff:	ff.c  ../Source/vobsub.c
-	$(CC) -I ../Include  -g -o ff -lavformat -lavcodec -lavutil -lavfilter  ff.c
+unit replay integration tooling:
+	$(PYTEST) $(HERE) -m $@ --ignore=$(HERE)/integration/subtitles
 
-stream_url:	stream_url.c
-	$(CC) -I ../Include -g -o stream_url stream_url.c
+subtitles:
+	python3 $(HERE)/integration/subtitles/test_host_native.py
 
-clean:	
-	rm -f *.o $(ALL) *.out *~ *.bak core
+# ---- coverage ---------------------------------------------------------------------------
+# The REAL sources are compiled once with gcov at -O0 using the repository's own Makefile (so
+# flags, defines and include paths are exactly the sim target's), archived without main.o, and
+# every unit/integration test links that archive.  No stubs of production code.
+# What is outside the percentage, and why, is listed in coverage/excluded.txt.
+coverage-lib: $(COV_LIB)
+
+$(COV_LIB): $(HERE)/support/cc-cov.sh $(HERE)/coverage/build_lib.py
+	python3 $(HERE)/coverage/build_lib.py --repo $(REPO) --out $(COV_DIR) --ffmpeg $(FFMPEG_PREFIX) -j $(JOBS)
+
+coverage: coverage-clean coverage-lib
+	COVERAGE=1 COV_DIR=$(COV_DIR) $(PYTEST) $(HERE) --ignore=$(HERE)/integration/subtitles -q
+	COVERAGE=1 COV_DIR=$(COV_DIR) python3 $(HERE)/integration/subtitles/test_host_native.py
+	$(MAKE) coverage-report
+
+coverage-report:
+	python3 $(HERE)/coverage/report.py --root $(REPO) --data $(COV_DIR)
+
+coverage-clean:
+	find $(COV_DIR) -name '*.gcda' -delete 2>/dev/null || true
+
+legacy:
+	$(MAKE) -C tools/legacy
+
+clean:
+	$(MAKE) -C tools/legacy clean
+	rm -rf $(COV_DIR) __pycache__ .pytest_cache

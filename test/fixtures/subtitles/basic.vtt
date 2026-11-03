@@ -1,0 +1,13 @@
+WEBVTT
+
+NOTE a comment
+
+intro
+00:00.500 --> 00:01.500 align:start position:10%
+Hello <v Bob>world</v>
+
+00:02.000 --> 00:03.000
+<c.yellow>Second</c> <b>cue</b>
+
+01:00:04.000 --> 01:00:05.000
+Hour-long timestamp
