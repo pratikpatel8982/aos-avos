@@ -6,7 +6,7 @@
  * (s32le_softclip_s16le, pcm_s16le_pga_softlimiter, pcm_s16le_pga_limiter, _calculateGain) are
  * reachable and gcov attributes the lines to Source/pcm_autogain.c.
  *
- * DEBUG_MSG is switched on so that the file's debug commands (atef/atei/ated/atpup/atpdn) are
+ * The sim build defines DEBUG_MSG (global.h), so the file's debug commands (atef/atei/ated/atpup/atpdn) are
  * compiled in and registered with the *real* debug registry (Source/debug.c); they are then driven
  * through the real dispatcher debug_do_cmd().
  *
@@ -16,7 +16,6 @@
  *   incr     = 1e6 * framesize * (GAIN_MAX - GAIN_MIN) / (650*5000 * rate)
  * Power threshold = 25,000,000, i.e. a constant signal of +-5000 is exactly on the threshold.
  */
-#define DEBUG_MSG 1
 #include "avos_test.h"
 #include "Source/pcm_autogain.c"
 

@@ -7,7 +7,6 @@
  * return distinctive values; everything else is the real production code, compiled in white-box
  * (with DEBUG_MSG so that its avs/avp/avt debug commands run through the real debug registry).
  */
-#define DEBUG_MSG 1
 #include "avos_test.h"
 #include "Source/ac_av.c"
 
