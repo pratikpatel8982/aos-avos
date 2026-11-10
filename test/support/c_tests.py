@@ -53,7 +53,9 @@ def build(source):
     # and the whole report fails. Drop this test's own stale coverage files before compiling.
     for stale in out.parent.glob(out.name + '-*.gc*'):
         stale.unlink()
-    cmd = [os.environ.get('REAL_CC', 'gcc'), *flags['cflags'],
+    san = ['-fsanitize=' + os.environ['AVOS_SAN'], '-fno-omit-frame-pointer', '-fno-sanitize-recover=undefined'] \
+        if os.environ.get('AVOS_SAN') else []
+    cmd = [os.environ.get('REAL_CC', 'gcc'), *flags['cflags'], *san,
            '-O0', '-g', '--coverage', '-fprofile-update=atomic', '-ffunction-sections', '-fdata-sections',
            '-Wno-error', '-I' + str(TEST_DIR / 'support'), '-I' + str(REPO_ROOT),
            f'-DAVOS_TEST_FIXTURES="{FIXTURES_DIR}"',
