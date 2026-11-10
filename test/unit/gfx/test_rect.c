@@ -237,7 +237,9 @@ TEST(dump_writes_the_tag_and_numbers_to_the_debug_console)
     }
     close(fd[1]);
     char buf[512] = { 0 };
-    ssize_t n = read(fd[0], buf, sizeof buf - 1);
+    ssize_t n = 0, got;                      /* read to EOF: the child may write a warning first, in a separate chunk */
+    while (n < (ssize_t)sizeof buf - 1 && (got = read(fd[0], buf + n, sizeof buf - 1 - n)) > 0)
+        n += got;
     close(fd[0]);
     waitpid(pid, NULL, 0);
     REQUIRE(n > 0);
