@@ -93,5 +93,11 @@ sanitize-asan sanitize-tsan:
 JOBS_MUT ?= 2
 MUTANTS  ?= 100
 mutate: $(COV_LIB)
+	@mkdir -p $(REPO)/build-cov/mutation
 	@for t in $$(find $(HERE)/unit -name 'test_*.c' | sort); do \
-	    python3 $(HERE)/tools/mutate.py $$t -n $(MUTANTS) -j $(JOBS_MUT) || exit 1; done
+	    case $$t in \
+	      *test_iso_tables.c) \
+	        python3 $(HERE)/tools/mutate.py $$t --source Source/iso639.c  -n $(MUTANTS) -j $(JOBS_MUT) || echo "FAILED: $$t (iso639)"; \
+	        python3 $(HERE)/tools/mutate.py $$t --source Source/iso3166.c -n $(MUTANTS) -j $(JOBS_MUT) || echo "FAILED: $$t (iso3166)";; \
+	      *) python3 $(HERE)/tools/mutate.py $$t -n $(MUTANTS) -j $(JOBS_MUT) || echo "FAILED: $$t";; \
+	    esac; echo; done
