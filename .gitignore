@@ -32,3 +32,14 @@ test/sdl
 test/ifo
 obj
 libs
+__pycache__/
+*.pyc
+.pytest_cache/
+*.gcda
+*.gcno
+build-cov
+
+# sanitizer / audit build outputs (test/Makefile)
+build-asan/
+build-tsan/
+build-audit/

@@ -1,0 +1,19 @@
+<SAMI>
+<HEAD>
+<TITLE>AVOS fixture</TITLE>
+<STYLE TYPE="text/css">
+<!--
+P { margin-left:8pt; margin-right:8pt; font-size:20pt; text-align:center; font-family:Arial; color:white; }
+.ENCC { Name:English; lang:en-US; SAMIType:CC; }
+.KRCC { Name:Korean; lang:ko-KR; SAMIType:CC; }
+-->
+</STYLE>
+</HEAD>
+<BODY>
+<SYNC Start=500><P Class=ENCC>Hello SAMI
+<SYNC Start=1500><P Class=ENCC>&nbsp;
+<SYNC Start=2000><P Class=ENCC>Second<br>line
+<SYNC Start=3000><P Class=ENCC>&nbsp;
+<SYNC Start=4000><P Class=KRCC>Other language
+</BODY>
+</SAMI>
