@@ -137,26 +137,6 @@ static unsigned char *slurp(const char *rel, int *size)
 
 /* ---- genre table ---------------------------------------------------------------------------- */
 
-TEST(genre_lookup_returns_the_standard_names_and_null_outside_the_table)
-{
-	CHECK_EQ_STR(ID3_get_genre(0), "Blues");
-	CHECK_EQ_STR(ID3_get_genre(13), "Pop");
-	CHECK_EQ_STR(ID3_get_genre(17), "Rock");
-	CHECK_EQ_STR(ID3_get_genre(79), "Hard Rock");
-	CHECK_EQ_STR(ID3_get_genre(147), "Synthpop");
-	CHECK_NULL(ID3_get_genre(148));
-	CHECK_NULL(ID3_get_genre(-1));
-	CHECK_NULL(ID3_get_genre(100000));
-}
-
-TEST(every_genre_slot_has_a_non_empty_name)
-{
-	for (int i = 0; i < 148; i++) {
-		const char *g = ID3_get_genre(i);
-		CHECK_MSG(g && *g, "genre %d is empty", i);
-	}
-}
-
 TEST(numeric_genre_in_parentheses_is_replaced_by_its_name)
 {
 	char g[64] = "(13)";

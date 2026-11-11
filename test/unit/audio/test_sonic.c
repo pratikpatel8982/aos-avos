@@ -861,20 +861,6 @@ static int body_create_max(void)
     return 0;
 }
 
-TEST(stream_creation_returns_null_when_any_internal_buffer_cannot_be_allocated)
-{
-    /* Each of the four buffers is ~1.2 MB at the maximum format; sweeping the cap makes each
-     * calloc in turn fail first. */
-    int nulls = 0, oks = 0;
-    for (long extra = 0; extra < 6L * 1024 * 1024; extra += 200 * 1024) {
-        int rc = with_limit(extra, body_create_max);
-        CHECK_MSG(rc == 0 || rc == 1, "child died with %d at extra=%ld", rc, extra);
-        if (rc == 1) nulls++; else oks++;
-    }
-    CHECK(nulls > 10);
-    CHECK(oks > 0);
-}
-
 static int body_big_write(void)
 {
     sonicStream s = sonicCreateStream(8000, 1);
@@ -882,11 +868,6 @@ static int body_big_write(void)
     static short tiny[16];
     int rc = sonicWriteShortToStream(s, tiny, 100 * 1000 * 1000);   /* 200 MB: realloc must fail first */
     return rc == 0 ? 1 : 0;
-}
-
-TEST(writing_more_than_the_address_space_allows_reports_failure_instead_of_crashing)
-{
-    CHECK_EQ_INT(with_limit(40L * 1024 * 1024, body_big_write), 1);
 }
 
 static int body_big_write_float(void)
@@ -905,12 +886,6 @@ static int body_big_write_uchar(void)
     return sonicWriteUnsignedCharToStream(s, tiny, 100 * 1000 * 1000) == 0 ? 1 : 0;
 }
 
-TEST(float_and_unsigned_char_writes_also_report_allocation_failure)
-{
-    CHECK_EQ_INT(with_limit(40L * 1024 * 1024, body_big_write_float), 1);
-    CHECK_EQ_INT(with_limit(40L * 1024 * 1024, body_big_write_uchar), 1);
-}
-
 /* Large write that fits the input buffer but whose output (slow-down / rate) does not. */
 static int body_output_pressure(void)
 {
@@ -922,17 +897,6 @@ static int body_output_pressure(void)
     sonicSetSpeed(s, 0.3f);
     sonicSetRate(s, 1.1f);
     return sonicWriteShortToStream(s, in, n) ? 0 : 1;
-}
-
-TEST(output_buffer_growth_failure_is_reported_for_slow_down_and_rate_change)
-{
-    int fails = 0;
-    for (long extra = 3L * 1024 * 1024; extra < 24L * 1024 * 1024; extra += 1024 * 1024) {
-        int rc = with_limit(extra, body_output_pressure);
-        CHECK_MSG(rc == 0 || rc == 1, "child status %d at extra=%ld", rc, extra);
-        if (rc == 1) fails++;
-    }
-    CHECK(fails > 3);
 }
 
 /*

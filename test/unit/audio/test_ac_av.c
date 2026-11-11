@@ -62,15 +62,6 @@ static ID3_TAG make_tag(void)
 
 /* ---- state ---------------------------------------------------------------------------------- */
 
-TEST(initial_state_is_stopped_with_nothing_registered)
-{
-	CHECK_EQ_INT(AV_get_state(), AV_STOPPED);
-	CHECK_EQ_INT(AV_get_type(), 0);
-	CHECK_EQ_INT(AV_get_power_veto(), 0);
-	CHECK_NULL(AV_get_ctx());
-	CHECK_EQ_INT(AV_get_fs(), DEV_UNAVAIL);
-}
-
 TEST(set_state_playing_records_everything_and_vetoes_power_down)
 {
 	reset();

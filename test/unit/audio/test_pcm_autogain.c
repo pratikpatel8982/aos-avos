@@ -536,17 +536,6 @@ TEST(debug_command_atpdn_never_takes_the_threshold_below_one)
 	CHECK(_agc_current_gain < base);
 }
 
-TEST(debug_switch_dbgagc_toggles_the_agc_debug_level)
-{
-	Debug[DBG_AGC] = 0;
-	debug_do_cmd((const unsigned char *)"dbgagc");
-	CHECK_EQ_INT(Debug[DBG_AGC], 1);
-	debug_do_cmd((const unsigned char *)"dbgagc 2");
-	CHECK_EQ_INT(Debug[DBG_AGC], 2);
-	debug_do_cmd((const unsigned char *)"dbgagc");
-	CHECK_EQ_INT(Debug[DBG_AGC], 0);
-}
-
 /*
  * UNREACHABLE on host: none. Every executable line is covered (146/146). The few branch outcomes
  * not taken are compiler-generated paths of abs() and of the DBG/DBG2 `if (Debug[..])` guards

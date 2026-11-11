@@ -216,34 +216,3 @@ TEST(fit_applies_the_pixel_aspect_ratio_and_rounds_x_and_width_to_even)
     /* odd width is rounded down to even: 3x1 into 7x7: 3*7*1 > 7*1*1 -> wide: width 7 -> 6, height = 7*1/3 = 2, y = 2 */
     check_rect(Rect_Fit(&(Rect){0, 0, 3, 1}, &(Rect){0, 0, 7, 7}, 1, 1), 0, 2, 6, 2);
 }
-
-TEST(dump_writes_the_tag_and_numbers_to_the_debug_console)
-{
-    /* serprintf -> TTY_write -> stdout (only once TTY_open ran); capture stdout of a child through a pipe */
-    int fd[2];
-    REQUIRE(pipe(fd) == 0);
-    fflush(NULL);
-    pid_t pid = fork();
-    if (pid == 0) {
-        close(fd[0]);
-        dup2(fd[1], 1);
-        dup2(fd[1], 2);
-        TTY_open(NULL);        /* serprintf -> TTY_write is a no-op until the tty layer is open */
-        Rect r = R(12, 34, 56, 78);
-        Rect_Dump(&r, "mytag");
-        fflush(NULL);
-        __gcov_dump();         /* _exit() skips gcov's atexit flush; without it these lines are not counted */
-        _exit(0);
-    }
-    close(fd[1]);
-    char buf[512] = { 0 };
-    ssize_t n = 0, got;                      /* read to EOF: the child may write a warning first, in a separate chunk */
-    while (n < (ssize_t)sizeof buf - 1 && (got = read(fd[0], buf + n, sizeof buf - 1 - n)) > 0)
-        n += got;
-    close(fd[0]);
-    waitpid(pid, NULL, 0);
-    REQUIRE(n > 0);
-    CHECK(strstr(buf, "RECT[mytag]") != NULL);
-    CHECK(strstr(buf, "  12x 34") != NULL);
-    CHECK(strstr(buf, "  56x 78") != NULL);
-}

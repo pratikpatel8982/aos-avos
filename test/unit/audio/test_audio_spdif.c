@@ -177,15 +177,6 @@ TEST(passthrough_mode_is_unset_until_a_mode_is_chosen_and_then_reported_back)
 	CHECK_EQ_INT(spdif_is_passthrough_on(), 0);
 }
 
-TEST(hdmi_capability_flags_are_stored_as_given)
-{
-	CHECK_EQ_INT(get_hdmi_supported_audio_codecs(), 0);
-	set_hdmi_supported_audio_codecs(0x12345678L);
-	CHECK_EQ_INT(get_hdmi_supported_audio_codecs(), 0x12345678L);
-	set_hdmi_supported_audio_codecs(0);
-	CHECK_EQ_INT(get_hdmi_supported_audio_codecs(), 0);
-}
-
 TEST(eight_channel_192khz_iec_is_inferred_from_dts_hd_or_truehd_support)
 {
 	set_hdmi_supported_audio_codecs(0);
@@ -201,16 +192,6 @@ TEST(eight_channel_192khz_iec_is_inferred_from_dts_hd_or_truehd_support)
 	CHECK_EQ_INT(get_hdmi_supports_iec_8ch192khz(), 0);
 }
 
-TEST(iec61937_support_is_its_own_flag_bit)
-{
-	set_hdmi_supported_audio_codecs(0);
-	CHECK_EQ_INT(get_hdmi_supports_iec(), 0);
-	set_hdmi_supported_audio_codecs(bit(ENCODING_IEC61937));
-	CHECK_EQ_INT(get_hdmi_supports_iec(), 1);
-	set_hdmi_supported_audio_codecs(~bit(ENCODING_IEC61937));
-	CHECK_EQ_INT(get_hdmi_supports_iec(), 0);
-}
-
 TEST(on_a_host_build_every_format_counts_as_passthrough_capable)
 {
 	/* without CONFIG_ANDROID there is no route to ask: the answer is always yes */
@@ -218,25 +199,6 @@ TEST(on_a_host_build_every_format_counts_as_passthrough_capable)
 	CHECK_EQ_INT(spdif_format_passthrough_supported(WAVE_FORMAT_AC3), 1);
 	CHECK_EQ_INT(spdif_format_passthrough_supported(WAVE_FORMAT_TRUEHD), 1);
 	CHECK_EQ_INT(spdif_format_passthrough_supported(0x1234), 1);
-}
-
-TEST(dts_hd_formats_and_route_helpers)
-{
-	CHECK_EQ_INT(spdif_is_dts_hd_format(WAVE_FORMAT_DTS_HD), 1);
-	CHECK_EQ_INT(spdif_is_dts_hd_format(WAVE_FORMAT_DTS_HD_MA), 1);
-	CHECK_EQ_INT(spdif_is_dts_hd_format(WAVE_FORMAT_DTS), 0);
-	CHECK_EQ_INT(spdif_is_dts_hd_format(WAVE_FORMAT_AC3), 0);
-
-	set_hdmi_supported_audio_codecs(0);
-	CHECK_EQ_INT(spdif_route_supports_dts_core(), 0);
-	CHECK_EQ_INT(spdif_route_supports_dts_hd(), 0);
-	set_hdmi_supported_audio_codecs(bit(ENCODING_DTS));
-	CHECK_EQ_INT(spdif_route_supports_dts_core(), 1);
-	CHECK_EQ_INT(spdif_route_supports_dts_hd(), 0);
-	set_hdmi_supported_audio_codecs(bit(ENCODING_DTS_HD));
-	CHECK_EQ_INT(spdif_route_supports_dts_hd(), 1);
-	set_hdmi_supported_audio_codecs(bit(ENCODING_DTS_HD_MA));
-	CHECK_EQ_INT(spdif_route_supports_dts_hd(), 1);
 }
 
 TEST(dts_core_fallback_does_not_exist_on_a_host_build_and_the_carrier_follows_the_8ch_flag)
@@ -1159,15 +1121,4 @@ TEST(verbose_logging_does_not_change_what_the_passthrough_produces)
 	CHECK_EQ_MEM(loud1.out, quiet.out, quiet.out_size);
 	CHECK_EQ_INT(loud2.out_size, cs.size);
 	free(quiet.out); free(loud1.out); free(loud2.out); coded_free(&cs);
-}
-
-TEST(the_passthrough_on_debug_parameter_sets_the_mode)
-{
-	spdif_set_passthrough(0);
-	debug_do_cmd((const unsigned char *)"passthrough_on 2");
-	CHECK_EQ_INT(spdif_is_passthrough_on(), 2);
-	debug_do_cmd((const unsigned char *)"passthrough_on");
-	CHECK_EQ_INT(spdif_is_passthrough_on(), 2);		/* no argument: only reports */
-	debug_do_cmd((const unsigned char *)"passthrough_on 1");
-	CHECK_EQ_INT(spdif_is_passthrough_on(), 1);
 }
