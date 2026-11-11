@@ -55,6 +55,8 @@ def build(source):
         stale.unlink()
     san = ['-fsanitize=' + os.environ['AVOS_SAN'], '-fno-omit-frame-pointer', '-fno-sanitize-recover=undefined'] \
         if os.environ.get('AVOS_SAN') else []
+    if san and os.environ.get('AVOS_SAN_NO'):
+        san.append('-fno-sanitize=' + os.environ['AVOS_SAN_NO'])
     cmd = [os.environ.get('REAL_CC', 'gcc'), *flags['cflags'], *san,
            '-O0', '-g', '--coverage', '-fprofile-update=atomic', '-ffunction-sections', '-fdata-sections',
            '-Wno-error', '-I' + str(TEST_DIR / 'support'), '-I' + str(REPO_ROOT),

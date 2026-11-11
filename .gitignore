@@ -38,3 +38,8 @@ __pycache__/
 *.gcda
 *.gcno
 build-cov
+
+# sanitizer / audit build outputs (test/Makefile)
+build-asan/
+build-tsan/
+build-audit/

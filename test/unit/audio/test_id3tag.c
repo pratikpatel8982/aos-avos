@@ -658,6 +658,25 @@ TEST(known_defect_an_empty_text_frame_swallows_the_bytes_of_the_following_frames
 	free(b);
 }
 
+/*
+ * The same defect is worse than "swallows the next frame": AddressSanitizer reports a heap-buffer-overflow READ
+ * (Source/id3tag.c:146, _peek via GetEntry:267). With the wrapped length the copy loop runs up to 255 bytes, which
+ * is past the end of the tag when the empty frame is the last thing in it, so bytes of unrelated heap memory end up
+ * in tag.title. A crafted tag does this. On a guarded copy the over-read faults.
+ * Correct result: title == "" and no read past `len`. When fixed, make this CHECK_SURVIVES.
+ */
+TEST(known_defect_an_empty_text_frame_at_the_end_of_the_tag_reads_past_the_buffer)
+{
+	TB t; tb_init(&t, 3);
+	tb_frame(&t, "TIT2", "", 0);
+	int len; unsigned char *b = tb_done(&t, 0, &len);
+	unsigned char *g = avos_guarded_copy(b, len);
+	REQUIRE_NOT_NULL(g);
+	ID3_TAG tag;
+	CHECK_FAULTS(parse(g, len, &tag, NULL));
+	free(b);
+}
+
 /* ---- attached pictures ------------------------------------------------------------------------ */
 
 /*

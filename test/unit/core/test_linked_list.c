@@ -220,16 +220,20 @@ TEST(contract_violations_assert)
     CHECK_ABORTS(LinkedList_insertAfter(&l, &a->n, &a->n));
     CHECK_ABORTS(LinkedList_remove(&l, &b->n));                  /* never queued            */
     CHECK_SURVIVES(LinkedList_remove(&l, &a->n));                /* the legal call survives */
+    afree(a);
+    afree(b);
 }
 
 TEST(dump_helpers_do_not_crash)
 {
     LinkedList l;
     LinkedList_init(&l);
-    LinkedList_append(&l, &item(7)->n);
+    Item *x = item(7);
+    LinkedList_append(&l, &x->n);
     CHECK_SURVIVES(LinkedList_dump(&l));
     CHECK_SURVIVES(LinkedList_dumpTestNodes(&l));
     CHECK_SURVIVES(LinkedList_test());                           /* the module's own built-in scenario */
+    afree(x);
 }
 
 TEST(prepend_onto_empty_list_sets_both_ends)
@@ -294,7 +298,8 @@ TEST(inserting_into_an_empty_list_relative_to_a_foreign_anchor_adopts_the_ends)
     CHECK(tail_target.last == &after->n);                /* anchor had no successor => target tail    */
     CHECK(tail_target.first == &after->n);               /* target was empty        => target head    */
     CHECK(donor.last == &anchor->n);
-    LinkedList_freeEntries(&donor);
+    LinkedList_freeEntries(&donor);                      /* walks donor.first -> anchor -> after and frees both */
+    afree(before);                                       /* only linked to `target`: not reachable from the donor */
 }
 
 TEST(invariant_check_detects_a_wrong_count)

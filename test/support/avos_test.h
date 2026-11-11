@@ -36,6 +36,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -102,10 +103,16 @@ static void avos_fail(const char *file, int line, const char *fmt, ...)
 extern void __gcov_dump(void);       /* libgcov: tests are always built with --coverage */
 static void avos_die_handler(int sig)
 {
-    __gcov_dump();
+#if !defined(__SANITIZE_ADDRESS__) && !defined(__SANITIZE_THREAD__)
+    __gcov_dump();                   /* under a sanitizer this call from a signal handler itself faults; coverage is moot there */
+#endif
     _exit(128 + sig);
 }
-static int avos_run_in_child(void (*body)(void *), void *arg)
+/*
+ * The statement under test runs inline in the forked child (no nested function: a GCC nested function that captures
+ * locals needs an executable-stack trampoline, which crashes the child under AddressSanitizer).
+ */
+static pid_t avos_child_start(void)
 {
     fflush(NULL);
     pid_t pid = fork();
@@ -115,22 +122,55 @@ static int avos_run_in_child(void (*body)(void *), void *arg)
         signal(SIGSEGV, avos_die_handler);
         signal(SIGBUS, avos_die_handler);
         signal(SIGFPE, avos_die_handler);
-        body(arg);
-        __gcov_dump();
-        _exit(0);
     }
+    return pid;
+}
+static void avos_child_exit(void)
+{
+#if !defined(__SANITIZE_ADDRESS__) && !defined(__SANITIZE_THREAD__)
+    __gcov_dump();
+#endif
+    _exit(0);
+}
+static int avos_child_wait(pid_t pid)
+{
     int st = 0;
     waitpid(pid, &st, 0);
     return WIFEXITED(st) ? WEXITSTATUS(st) : 128 + WTERMSIG(st);
 }
 #define CHECK_ABORTS(stmt) do { avos_checks++;                                                 \
-    int _rc;                                                                                    \
-    { void _b(void *_u) { (void)_u; stmt; } _rc = avos_run_in_child(_b, NULL); }                \
+    pid_t _p = avos_child_start();                                                              \
+    if (_p == 0) { stmt; avos_child_exit(); }                                                  \
+    int _rc = avos_child_wait(_p);                                                              \
     if (_rc != 128 + SIGABRT) avos_fail(__FILE__, __LINE__, "expected abort from `%s`, child status %d", #stmt, _rc); } while (0)
-#define CHECK_SURVIVES(stmt) do { avos_checks++;                                               \
-    int _rc;                                                                                    \
-    { void _b(void *_u) { (void)_u; stmt; } _rc = avos_run_in_child(_b, NULL); }                \
+#define CHECK_SURVIVES(stmt) do { avos_checks++;                                                 \
+    pid_t _p = avos_child_start();                                                              \
+    if (_p == 0) { stmt; avos_child_exit(); }                                                  \
+    int _rc = avos_child_wait(_p);                                                              \
     if (_rc != 0) avos_fail(__FILE__, __LINE__, "`%s` died, child status %d", #stmt, _rc); } while (0)
+
+/*
+ * Out-of-bounds READS, found deterministically without a sanitizer: avos_guarded_copy() returns a copy of the
+ * data placed so that its last byte is the last byte of a mapped page, followed by a PROT_NONE page. A function
+ * that reads even one byte past the end faults on the spot (SIGSEGV), where a plain malloc() copy would silently
+ * return heap garbage. CHECK_FAULTS(stmt) expects exactly that fault in a child process; use it to pin a
+ * known_defect_* test, and CHECK_SURVIVES(stmt) on a guarded copy as the regression test once it is fixed.
+ */
+static unsigned char *avos_guarded_copy(const void *src, size_t n)
+{
+    size_t pg = (size_t)sysconf(_SC_PAGESIZE), span = ((n + pg - 1) / pg) * pg;
+    unsigned char *base = mmap(NULL, span + pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (base == MAP_FAILED) return NULL;
+    mprotect(base + span, pg, PROT_NONE);
+    memcpy(base + span - n, src, n);
+    return base + span - n;
+}
+#define CHECK_FAULTS(stmt) do { avos_checks++;                                                 \
+    pid_t _p = avos_child_start();                                                              \
+    if (_p == 0) { stmt; avos_child_exit(); }                                                    \
+    int _rc = avos_child_wait(_p);                                                              \
+    if (_rc != 128 + SIGSEGV && _rc != 128 + SIGBUS)                                            \
+        avos_fail(__FILE__, __LINE__, "expected a memory fault from `%s`, child status %d", #stmt, _rc); } while (0)
 
 /* Absolute path of a file under test/fixtures (static buffer; copy it if you keep it). */
 static const char *fixture_path(const char *name)

@@ -573,3 +573,24 @@ TEST(real_non_mp3_data_has_no_sync)
  *    sized buffers. Not reproducible without a sanitizer, so it is not pinned by a test.
  *  - Frame length ignores the padding bit; MP3_find_sync compensates by also trying length + 1.
  */
+
+/*
+ * KNOWN DEFECT, confirmed by AddressSanitizer (heap- and stack-buffer-overflow, Source/mp3.c:184): MP3_find_sync()
+ * reads p[0] and p[1] before checking that the buffer holds two bytes, and copies p[0..3] into `head` before the
+ * length check, so near the end of the data it reads up to 3 bytes past it. The data comes from the media file.
+ * A guarded copy makes the over-read fault. When fixed these become CHECK_SURVIVES.
+ */
+TEST(known_defect_find_sync_reads_past_the_end_of_a_short_buffer)
+{
+	MP3_FRAME fr;
+	int ofs = -1;
+	unsigned char one[1] = { 0xFF };			/* too short for the 2-byte sync test */
+	unsigned char *g1 = avos_guarded_copy(one, sizeof one);
+	REQUIRE_NOT_NULL(g1);
+	CHECK_FAULTS(MP3_find_sync(NULL, g1, 1, &fr, &ofs));
+
+	unsigned char hdr[2] = { 0xFF, 0xFB };			/* a valid MPEG1 Layer III sync, but the 4-byte header is cut */
+	unsigned char *g2 = avos_guarded_copy(hdr, sizeof hdr);
+	REQUIRE_NOT_NULL(g2);
+	CHECK_FAULTS(MP3_find_sync(NULL, g2, 2, &fr, &ofs));
+}
